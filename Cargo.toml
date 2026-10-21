@@ -7,7 +7,7 @@ edition = "2024"
 chrono = "0.4.45"
 directories = "6.0.0"
 futures-util = "0.3.34"
-iced = { version = "0.14.0", features = ["tokio", "highlighter"] }
+iced = { version = "0.14.0", features = ["tokio", "highlighter", "linux-theme-detection"] }
 iced_aw = { version = "0.14", default-features = false, features = ["context_menu"] }
 keyring = "4.2.0"
 rust_decimal = "1.43.0"

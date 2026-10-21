@@ -7,6 +7,7 @@ use iced::{Alignment, Element, Font, Length, task};
 
 use crate::app::{Message, shortcut};
 use crate::db::{self, Connection, QueryOutcome};
+use crate::style;
 
 /// Rows rendered per page in the results grid. The grid builds a widget per
 /// cell, so showing everything at once gets slow with large results.
@@ -80,11 +81,11 @@ impl QueryTab {
         self.conn.take()
     }
 
-    pub fn view(&self, connected: bool) -> Element<'_, Message> {
+    pub fn view(&self, connected: bool, highlighter: iced::highlighter::Theme) -> Element<'_, Message> {
         let run = if self.running.is_some() {
-            button("■ Cancel").on_press(Message::Cancel).style(button::danger)
+            button("■ Cancel").on_press(Message::Cancel).style(style::danger)
         } else {
-            button("▶ Run").on_press_maybe(connected.then_some(Message::Run)).style(button::success)
+            button("▶ Run").on_press_maybe(connected.then_some(Message::Run)).style(style::success)
         };
         let db_label = if self.current_db.is_empty() { "(default database)" } else { self.current_db.as_str() };
         let toolbar = row![run, text(format!("Database: {db_label}")).size(13).style(text::secondary)]
@@ -94,9 +95,10 @@ impl QueryTab {
 
         let editor = text_editor(&self.editor)
             .on_action(Message::Edit)
-            .highlight("sql", iced::highlighter::Theme::Base16Ocean)
+            .highlight("sql", highlighter)
             .font(Font::MONOSPACE)
             .size(14)
+            .style(style::editor)
             .height(Length::FillPortion(2))
             .padding(8)
             .key_binding(|press| {
@@ -119,7 +121,7 @@ impl QueryTab {
 
         let tab = |label: String, pane: ResultsPane| {
             button(text(label).size(14))
-                .style(if self.pane == pane { button::primary } else { button::text })
+                .style(if self.pane == pane { style::selected } else { button::text })
                 .on_press(Message::ShowPane(pane))
         };
         let mut tabs = row![
@@ -134,7 +136,7 @@ impl QueryTab {
             for i in 0..outcome.results.len() {
                 tabs = tabs.push(
                     button(text(format!("#{}", i + 1)).size(13))
-                        .style(if self.result_index == i { button::secondary } else { button::text })
+                        .style(if self.result_index == i { style::selected } else { button::text })
                         .on_press(Message::SelectResult(i)),
                 );
             }

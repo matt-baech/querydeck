@@ -8,6 +8,7 @@ use iced_aw::ContextMenu;
 
 use crate::app::Message;
 use crate::db::catalog::{ColumnInfo, DbObject, ObjectKind};
+use crate::style;
 
 #[derive(Debug, Clone)]
 pub enum Load<T> {
@@ -243,7 +244,7 @@ impl Explorer {
         let node = button(content)
             .padding([2, 6])
             .width(Length::Fill)
-            .style(if selected { button::secondary } else { button::text })
+            .style(if selected { style::selected } else { button::text })
             .on_press(Message::Explorer(ExplorerMsg::Toggle(key)));
         row![space().width(INDENT * f32::from(level)), ContextMenu::new(node, move || context_menu(&menu))].into()
     }

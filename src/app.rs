@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::{button, center, column, container, opaque, row, rule, scrollable, space, stack, text};
+use iced::theme::Mode;
+use iced::widget::{button, center, column, container, opaque, pick_list, row, rule, scrollable, space, stack, text};
 use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme};
 
 use crate::connect::{ConnectForm, FormMsg};
@@ -9,12 +10,18 @@ use crate::db::catalog::{self, DbObject};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Request};
 use crate::query_tab::{QueryTab, ResultsPane};
+use crate::settings::{Settings, ThemeChoice};
+use crate::style;
 
 const SAMPLE_SQL: &str = "-- F5 or Ctrl+Enter runs the script (or just the selection).\n\
 -- SQL Server scripts can be split into batches with GO.\n\nSELECT 1 AS hello;\n";
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    // Appearance
+    SetTheme(ThemeChoice),
+    SystemTheme(Mode),
+
     // Connect dialog
     Form(FormMsg),
     OpenDialog,
@@ -66,6 +73,9 @@ pub struct App {
     next_tab_id: u64,
 
     status: Status,
+    settings: Settings,
+    /// Light or dark, as the desktop currently prefers.
+    system_mode: Mode,
 }
 
 enum Status {
@@ -86,9 +96,11 @@ impl App {
             active: 0,
             next_tab_id: 1,
             status: Status::Idle,
+            settings: Settings::load(),
+            system_mode: Mode::Dark,
         };
         app.open_tab(None, SAMPLE_SQL, None);
-        (app, Task::none())
+        (app, iced::system::theme().map(Message::SystemTheme))
     }
 
     pub fn title(&self) -> String {
@@ -99,16 +111,17 @@ impl App {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::TokyoNightStorm
+        self.settings.theme.resolve(self.system_mode)
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         // The editor handles its own shortcuts while focused; this covers the
         // case where focus is elsewhere.
-        keyboard::listen().filter_map(|event| match event {
+        let keys = keyboard::listen().filter_map(|event| match event {
             keyboard::Event::KeyPressed { key, modifiers, .. } => shortcut(&key, modifiers),
             _ => None,
-        })
+        });
+        Subscription::batch([keys, iced::system::theme_changes().map(Message::SystemTheme)])
     }
 
     fn active_tab(&mut self) -> Option<&mut QueryTab> {
@@ -131,6 +144,13 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::SetTheme(choice) => {
+                self.settings.theme = choice;
+                if let Err(e) = self.settings.save() {
+                    self.status = Status::Error(e);
+                }
+            }
+            Message::SystemTheme(mode) => self.system_mode = mode,
             Message::Form(msg) => self.form.update(msg),
             Message::OpenDialog => self.dialog_open = true,
             Message::CloseDialog => self.dialog_open = false,
@@ -399,7 +419,7 @@ impl App {
             None => container(
                 column![
                     text("Not connected.").size(14),
-                    button("Connect…").on_press(Message::OpenDialog).style(button::success),
+                    button("Connect…").on_press(Message::OpenDialog).style(style::success),
                 ]
                 .spacing(10)
                 .align_x(Alignment::Center),
@@ -430,32 +450,33 @@ impl App {
                 container(
                     row![
                         button(text(format!("{busy}{}", tab.title)).size(13))
-                            .style(button::text)
-                            .padding([4, 8])
+                            .style(move |t: &Theme, s| tab_button(t, s, active))
+                            .padding([6, 10])
                             .on_press(Message::SelectTab(tab.id)),
-                        button(text("×").size(13)).style(button::text).padding([4, 6]).on_press(Message::CloseTab(tab.id)),
+                        button(text("×").size(13)).style(move |t: &Theme, s| tab_button(t, s, active)).padding([6, 8]).on_press(Message::CloseTab(tab.id)),
                     ]
                     .align_y(Alignment::Center),
                 )
-                .style(move |theme: &Theme| tab_style(theme, active)),
+                .style(move |theme: &Theme| style::tab(theme, active)),
             );
         }
         strip = strip.push(
             button(text("+").size(14)).style(button::text).on_press(Message::NewQuery(None)),
         );
         container(scrollable(strip).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(4).scroller_width(4))))
-            .padding([4, 6])
+            .padding(iced::Padding { top: 4.0, right: 6.0, bottom: 0.0, left: 6.0 })
             .width(Length::Fill)
+            .style(style::tab_strip)
             .into()
     }
 
     fn active_tab_view(&self) -> Element<'_, Message> {
         match self.tabs.iter().find(|t| t.id == self.active) {
-            Some(tab) => tab.view(self.session.is_some()),
+            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.theme())),
             None => container(
                 column![
                     text("No open queries").size(16),
-                    button("New Query (Ctrl+N)").on_press(Message::NewQuery(None)).style(button::secondary),
+                    button("New Query (Ctrl+N)").on_press(Message::NewQuery(None)).style(style::neutral),
                 ]
                 .spacing(10)
                 .align_x(Alignment::Center),
@@ -476,8 +497,16 @@ impl App {
             None => "Not connected".into(),
         };
         container(
-            row![text(msg).size(13).style(style), space().width(Length::Fill), text(server).size(13).style(text::secondary)]
-                .align_y(Alignment::Center),
+            row![
+                text(msg).size(13).style(style),
+                space().width(Length::Fill),
+                text(server).size(13).style(text::secondary),
+                pick_list(&ThemeChoice::ALL[..], Some(self.settings.theme), Message::SetTheme)
+                    .text_size(12)
+                    .padding([2, 8]),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
         )
         .padding([4, 10])
         .width(Length::Fill)
@@ -503,22 +532,21 @@ fn close_conn(conn: Option<Connection>) -> Task<Message> {
 }
 
 fn small_button(label: &str, msg: Option<Message>) -> iced::widget::Button<'_, Message> {
-    button(text(label).size(12)).padding([3, 7]).style(button::secondary).on_press_maybe(msg)
+    button(text(label).size(12)).padding([3, 7]).style(style::neutral).on_press_maybe(msg)
 }
 
 fn backdrop(_theme: &Theme) -> container::Style {
     container::Style { background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()), ..container::Style::default() }
 }
 
-fn tab_style(theme: &Theme, active: bool) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: active.then(|| palette.background.weak.color.into()),
-        border: iced::Border {
-            color: if active { palette.primary.base.color } else { Color::TRANSPARENT },
-            width: if active { 1.0 } else { 0.0 },
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    }
+/// Tab labels are plain text; inactive ones are dimmed until hovered. The
+/// container behind them shows which tab is active.
+fn tab_button(theme: &Theme, status: button::Status, active: bool) -> button::Style {
+    let text = theme.extended_palette().background.base.text;
+    let text_color = match status {
+        _ if active => text,
+        button::Status::Hovered | button::Status::Pressed => text,
+        _ => text.scale_alpha(0.6),
+    };
+    button::Style { text_color, ..button::text(theme, status) }
 }

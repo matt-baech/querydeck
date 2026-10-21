@@ -6,6 +6,7 @@ use iced::{Alignment, Element, Length, Theme};
 use crate::app::Message;
 use crate::db::{Driver, Profile};
 use crate::profiles;
+use crate::style;
 
 #[derive(Debug, Clone)]
 pub enum FormMsg {
@@ -176,7 +177,7 @@ impl ConnectForm {
             saved = saved.push(
                 button(text(label).size(14))
                     .width(Length::Fill)
-                    .style(if self.selected == Some(i) { button::primary } else { button::text })
+                    .style(if self.selected == Some(i) { style::selected } else { button::text })
                     .on_press(Message::Form(FormMsg::SelectProfile(i))),
             );
         }
@@ -201,7 +202,7 @@ impl ConnectForm {
         };
         let form_msg = |m: fn(String) -> FormMsg| move |v: String| Message::Form(m(v));
         let mut form = column![
-            field("Name", text_input("My server", &f.name).on_input(form_msg(FormMsg::Name)).into()),
+            field("Name", text_input("My server", &f.name).style(style::input).on_input(form_msg(FormMsg::Name)).into()),
             field(
                 "Server type",
                 pick_list(&Driver::ALL[..], Some(f.driver), |d| Message::Form(FormMsg::Driver(d)))
@@ -209,16 +210,16 @@ impl ConnectForm {
                     .into()
             ),
             row![
-                field("Host", text_input("localhost", &f.host).on_input(form_msg(FormMsg::Host)).into()),
-                container(field("Port", text_input("", &self.port_text).on_input(form_msg(FormMsg::Port)).into()))
+                field("Host", text_input("localhost", &f.host).style(style::input).on_input(form_msg(FormMsg::Host)).into()),
+                container(field("Port", text_input("", &self.port_text).style(style::input).on_input(form_msg(FormMsg::Port)).into()))
                     .width(90),
             ]
             .spacing(8),
             row![
-                field("User", text_input("", &f.user).on_input(form_msg(FormMsg::User)).into()),
+                field("User", text_input("", &f.user).style(style::input).on_input(form_msg(FormMsg::User)).into()),
                 field(
                     "Password",
-                    text_input("", &self.password)
+                    text_input("", &self.password).style(style::input)
                         .secure(true)
                         .on_input(form_msg(FormMsg::Password))
                         .on_submit(Message::Connect)
@@ -226,7 +227,7 @@ impl ConnectForm {
                 ),
             ]
             .spacing(8),
-            field("Database", text_input("", &f.database).on_input(form_msg(FormMsg::Database)).into()),
+            field("Database", text_input("", &f.database).style(style::input).on_input(form_msg(FormMsg::Database)).into()),
         ]
         .spacing(10);
         let mut options = row![
@@ -257,13 +258,13 @@ impl ConnectForm {
         let connect_btn = if self.connecting {
             button("Connecting…")
         } else {
-            button("Connect").on_press(Message::Connect).style(button::success)
+            button("Connect").on_press(Message::Connect).style(style::success)
         };
         let actions = row![
-            button("Save").on_press(Message::Form(FormMsg::Save)).style(button::secondary),
+            button("Save").on_press(Message::Form(FormMsg::Save)).style(style::neutral),
             button("Delete")
                 .on_press_maybe(self.selected.map(|_| Message::Form(FormMsg::Delete)))
-                .style(button::danger),
+                .style(style::danger),
             space().width(Length::Fill),
             button("Close").on_press(Message::CloseDialog).style(button::text),
             connect_btn,
