@@ -2,16 +2,14 @@
 
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, row, rule, scrollable, space, table, text, text_editor};
-use iced::{Alignment, Element, Font, Length, task};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, space, table, text, text_editor};
+use iced::{Alignment, Element, Font, Length, mouse, task};
 
-use crate::app::{Message, shortcut};
+use crate::app::{Drag, Message, shortcut};
 use crate::db::{self, Connection, QueryOutcome};
-use crate::style;
+use crate::settings::Settings;
+use crate::style::{self, icon};
 
-/// Rows rendered per page in the results grid. The grid builds a widget per
-/// cell, so showing everything at once gets slow with large results.
-const PAGE_SIZE: usize = 500;
 /// Long cell values are cut to this many characters in the grid.
 const MAX_CELL_CHARS: usize = 120;
 
@@ -64,7 +62,8 @@ impl QueryTab {
 
     pub fn finish(&mut self, outcome: Arc<QueryOutcome>) {
         self.running = None;
-        self.pane = if outcome.failed || outcome.results.is_empty() { ResultsPane::Messages } else { ResultsPane::Grid };
+        self.pane =
+            if outcome.failed || outcome.results.is_empty() { ResultsPane::Messages } else { ResultsPane::Grid };
         self.result_index = 0;
         self.page = 0;
         if let Some(db) = &outcome.current_database {
@@ -81,26 +80,53 @@ impl QueryTab {
         self.conn.take()
     }
 
-    pub fn view(&self, connected: bool, highlighter: iced::highlighter::Theme) -> Element<'_, Message> {
-        let run = if self.running.is_some() {
-            button("■ Cancel").on_press(Message::Cancel).style(style::danger)
+    /// Pane sizes come from the app's settings so they survive tab switches.
+    pub fn view<'a>(
+        &'a self,
+        connected: bool,
+        highlighter: iced::highlighter::Theme,
+        settings: &Settings,
+    ) -> Element<'a, Message> {
+        let run: Element<'_, Message> = if self.running.is_some() {
+            style::tip(
+                style::tool_button(
+                    style::icon_colored(icon::debug_stop(), Some(style::danger_color)),
+                    Some("Cancel"),
+                    Some(Message::Cancel),
+                ),
+                "Cancel query (Esc)",
+            )
+            .into()
         } else {
-            button("▶ Run").on_press_maybe(connected.then_some(Message::Run)).style(style::success)
+            style::tip(
+                style::tool_button(
+                    style::icon_colored(icon::play(), Some(style::success_color)),
+                    Some("Run"),
+                    connected.then_some(Message::Run),
+                ),
+                "Run script or selection (F5, Ctrl+Enter)",
+            )
+            .into()
         };
-        let db_label = if self.current_db.is_empty() { "(default database)" } else { self.current_db.as_str() };
-        let toolbar = row![run, text(format!("Database: {db_label}")).size(13).style(text::secondary)]
-            .spacing(12)
-            .padding([6, 8])
-            .align_y(Alignment::Center);
+        let db_label = if self.current_db.is_empty() { "default database" } else { self.current_db.as_str() };
+        let toolbar = row![
+            run,
+            vertical_divider(),
+            style::icon_colored(icon::database(), Some(style::accent_color)),
+            text(db_label).size(style::BODY),
+        ]
+        .spacing(style::S2)
+        .padding([style::S1, style::S2])
+        .align_y(Alignment::Center);
 
         let editor = text_editor(&self.editor)
             .on_action(Message::Edit)
             .highlight("sql", highlighter)
-            .font(Font::MONOSPACE)
-            .size(14)
+            .font(style::MONO_FONT)
+            .size(settings.editor_font_size)
             .style(style::editor)
-            .height(Length::FillPortion(2))
-            .padding(8)
+            .height(settings.editor_height)
+            .padding([style::S2, style::S3])
             .key_binding(|press| {
                 if let Some(m) = shortcut(&press.key, press.modifiers) {
                     return Some(text_editor::Binding::Custom(m));
@@ -108,35 +134,46 @@ impl QueryTab {
                 text_editor::Binding::from_key_press(press)
             });
 
-        column![toolbar, editor, rule::horizontal(1), self.results_view()].into()
+        column![toolbar, horizontal_divider(), editor, splitter(Drag::Editor), self.results_view(settings.page_size),]
+            .into()
     }
 
-    fn results_view(&self) -> Element<'_, Message> {
+    fn results_view(&self, page_size: usize) -> Element<'_, Message> {
         let Some(outcome) = &self.outcome else {
-            return container(text("Run a query to see results here.").size(14))
+            return container(style::dim(text("Run a query to see results here.").size(style::BODY)))
                 .center(Length::Fill)
-                .height(Length::FillPortion(3))
                 .into();
         };
 
-        let tab = |label: String, pane: ResultsPane| {
-            button(text(label).size(14))
-                .style(if self.pane == pane { style::selected } else { button::text })
-                .on_press(Message::ShowPane(pane))
+        let tab = |label: String, pane: ResultsPane| -> Element<'_, Message> {
+            let active = self.pane == pane;
+            let label = text(label).size(style::SMALL).font(style::UI_BOLD);
+            let label = if active { label } else { style::dim(label) };
+            column![
+                button(label)
+                    .padding([style::S1 + 2.0, style::S2])
+                    .style(style::flat)
+                    .on_press(Message::ShowPane(pane)),
+                container(space()).height(2).width(Length::Fill).style(if active {
+                    style::underline
+                } else {
+                    transparent
+                }),
+            ]
+            .width(Length::Shrink)
+            .into()
         };
-        let mut tabs = row![
-            tab(format!("Results ({})", outcome.results.len()), ResultsPane::Grid),
-            tab("Messages".into(), ResultsPane::Messages),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center);
+        let mut tabs = row![tab("RESULTS".into(), ResultsPane::Grid), tab("MESSAGES".into(), ResultsPane::Messages)]
+            .spacing(style::S1)
+            .align_y(Alignment::End);
 
         if self.pane == ResultsPane::Grid && outcome.results.len() > 1 {
-            tabs = tabs.push(space().width(16));
+            tabs = tabs.push(space().width(style::S4));
             for i in 0..outcome.results.len() {
                 tabs = tabs.push(
-                    button(text(format!("#{}", i + 1)).size(13))
-                        .style(if self.result_index == i { style::selected } else { button::text })
+                    button(text(format!("{}", i + 1)).size(style::SMALL))
+                        .padding([2.0, style::S2])
+                        .style(if self.result_index == i { style::row_selected } else { style::flat })
                         .on_press(Message::SelectResult(i)),
                 );
             }
@@ -144,43 +181,66 @@ impl QueryTab {
 
         let body: Element<'_, Message> = match self.pane {
             ResultsPane::Messages => {
-                let mut list = column![].spacing(4).padding(8);
+                let mut list = column![].spacing(style::S1).padding([style::S2, style::S3]);
                 for m in &outcome.messages {
-                    list = list.push(text(m).font(Font::MONOSPACE).size(13));
+                    let line = text(m).font(style::MONO_FONT).size(style::BODY);
+                    list = list.push(if outcome.failed && m.contains("rror") {
+                        line.style(|t: &iced::Theme| text::Style { color: Some(style::danger_color(t)) })
+                    } else {
+                        line
+                    });
                 }
-                list = list.push(text(format!("Total execution time: {:.3}s", outcome.elapsed.as_secs_f64())).size(13));
+                list = list.push(style::dim(
+                    text(format!("Total execution time: {:.3}s", outcome.elapsed.as_secs_f64())).size(style::BODY),
+                ));
                 scrollable(list).width(Length::Fill).height(Length::Fill).into()
             }
             ResultsPane::Grid => match outcome.results.get(self.result_index) {
-                None => container(text("The query returned no result sets.").size(14)).center(Length::Fill).into(),
-                Some(set) => self.grid(set),
+                None => container(style::dim(text("The query returned no result sets.").size(style::BODY)))
+                    .center(Length::Fill)
+                    .into(),
+                Some(set) => self.grid(set, page_size),
             },
         };
 
-        column![container(tabs).padding([4, 8]), body].height(Length::FillPortion(3)).into()
+        column![container(tabs).padding([0.0, style::S2]), horizontal_divider(), body].height(Length::Fill).into()
     }
 
-    fn grid<'a>(&'a self, set: &'a db::ResultSet) -> Element<'a, Message> {
-        let pages = set.rows.len().div_ceil(PAGE_SIZE).max(1);
+    fn grid<'a>(&'a self, set: &'a db::ResultSet, page_size: usize) -> Element<'a, Message> {
+        let page_size = page_size.max(1);
+        let pages = set.rows.len().div_ceil(page_size).max(1);
         let page = self.page.min(pages - 1);
-        let start = page * PAGE_SIZE;
-        let end = (start + PAGE_SIZE).min(set.rows.len());
+        let start = page * page_size;
+        let end = (start + page_size).min(set.rows.len());
+        let page_rows = &set.rows[start..end];
 
-        let mut columns = vec![table::column(text("#").size(13), move |(n, _): (usize, &'a Vec<String>)| {
-            text(n + 1).size(13).font(Font::MONOSPACE)
-        })];
+        let mut columns = vec![
+            table::column(style::dim(text("#").size(style::SMALL)), move |(n, _): (usize, &'a Vec<String>)| {
+                style::dim(text(n + 1).size(style::SMALL).font(style::MONO_FONT))
+            })
+            .align_x(Alignment::End),
+        ];
         for (ci, name) in set.columns.iter().enumerate() {
             let header = text(if name.is_empty() { "(No column name)" } else { name.as_str() })
-                .size(13)
-                .font(Font { weight: iced::font::Weight::Bold, ..Font::default() });
-            columns.push(table::column(header, move |(_, row): (usize, &'a Vec<String>)| {
+                .size(style::BODY)
+                .font(style::UI_BOLD);
+            let numeric = is_numeric_column(page_rows, ci);
+            let col = table::column(header, move |(_, row): (usize, &'a Vec<String>)| {
                 let value = row.get(ci).map(String::as_str).unwrap_or_default();
-                let cell = text(truncate(value)).size(13).font(Font::MONOSPACE);
-                if value == db::NULL { cell.style(text::secondary) } else { cell }
-            }));
+                if value == db::NULL {
+                    style::dim(
+                        text("NULL")
+                            .size(style::BODY)
+                            .font(Font { style: iced::font::Style::Italic, ..style::MONO_FONT }),
+                    )
+                } else {
+                    text(truncate(value)).size(style::BODY).font(style::MONO_FONT)
+                }
+            });
+            columns.push(if numeric { col.align_x(Alignment::End) } else { col });
         }
-        let rows = set.rows[start..end].iter().enumerate().map(move |(i, r)| (start + i, r));
-        let grid = table(columns, rows).padding_x(8).padding_y(3);
+        let rows = page_rows.iter().enumerate().map(move |(i, r)| (start + i, r));
+        let grid = table(columns, rows).padding_x(style::S2 + 2.0).padding_y(style::S1);
 
         let scroll = scrollable(grid)
             .direction(scrollable::Direction::Both {
@@ -190,32 +250,76 @@ impl QueryTab {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let mut pager = row![
-            text(format!(
-                "{} row(s){}",
-                set.rows.len(),
-                if set.truncated { format!(" — truncated at {}", db::MAX_ROWS) } else { String::new() }
-            ))
-            .size(13)
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
-        if pages > 1 {
-            pager = pager.push(space().width(Length::Fill)).push(
-                row![
-                    button("‹").style(button::text).on_press_maybe((page > 0).then(|| Message::Page(page - 1))),
-                    text(format!("rows {}–{} · page {}/{}", start + 1, end, page + 1, pages)).size(13),
-                    button("›")
-                        .style(button::text)
-                        .on_press_maybe((page + 1 < pages).then(|| Message::Page(page + 1))),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-            );
+        if pages == 1 {
+            return scroll.into();
         }
+        let pager = row![
+            space().width(Length::Fill),
+            style::tool_button(
+                icon::chevron_left().size(style::ICON),
+                None,
+                (page > 0).then(|| Message::Page(page - 1))
+            ),
+            style::dim(
+                text(format!("Rows {}–{} of {} · page {}/{}", start + 1, end, set.rows.len(), page + 1, pages))
+                    .size(style::SMALL)
+            ),
+            style::tool_button(
+                icon::chevron_right().size(style::ICON),
+                None,
+                (page + 1 < pages).then(|| Message::Page(page + 1))
+            ),
+        ]
+        .spacing(style::S1)
+        .align_y(Alignment::Center);
 
-        column![scroll, container(pager).padding([4, 8])].into()
+        column![scroll, horizontal_divider(), container(pager).padding([2.0, style::S2])].into()
     }
+}
+
+/// True if every non-NULL value in the column looks like a number.
+fn is_numeric_column(rows: &[Vec<String>], col: usize) -> bool {
+    let mut seen = false;
+    for v in rows.iter().filter_map(|r| r.get(col)).filter(|v| v.as_str() != db::NULL) {
+        if v.parse::<f64>().is_err() {
+            return false;
+        }
+        seen = true;
+    }
+    seen
+}
+
+pub fn horizontal_divider<'a>() -> Element<'a, Message> {
+    container(space()).height(1).width(Length::Fill).style(style::divider_line).into()
+}
+
+pub fn vertical_divider<'a>() -> Element<'a, Message> {
+    container(space()).width(1).height(16).style(style::divider_line).into()
+}
+
+/// A thin draggable bar between two panes. The line is 1px; the grab area is wider.
+pub fn splitter<'a>(drag: Drag) -> Element<'a, Message> {
+    let (line, interaction) = match drag {
+        Drag::Editor => (
+            container(container(space()).height(1).width(Length::Fill).style(style::divider_line))
+                .height(GRAB)
+                .center_y(GRAB),
+            mouse::Interaction::ResizingVertically,
+        ),
+        Drag::Sidebar => (
+            container(container(space()).width(1).height(Length::Fill).style(style::divider_line))
+                .width(GRAB)
+                .center_x(GRAB),
+            mouse::Interaction::ResizingHorizontally,
+        ),
+    };
+    mouse_area(line).interaction(interaction).on_press(Message::DragStart(drag)).into()
+}
+
+const GRAB: f32 = 5.0;
+
+fn transparent(_: &iced::Theme) -> container::Style {
+    container::Style::default()
 }
 
 fn truncate(s: &str) -> String {

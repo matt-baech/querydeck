@@ -2,16 +2,24 @@ mod app;
 mod connect;
 mod db;
 mod explorer;
+mod preferences;
 mod profiles;
 mod query_tab;
 mod settings;
 mod style;
+mod tray;
 
 fn main() -> iced::Result {
-    iced::application(app::App::new, app::App::update, app::App::view)
+    // A daemon keeps running with no windows open, which is what lets the
+    // app live in the system tray: on Wayland a window can't be hidden, only
+    // closed and opened again.
+    let mut app = iced::daemon(app::App::new, app::App::update, app::App::view)
         .title(app::App::title)
         .theme(app::App::theme)
         .subscription(app::App::subscription)
-        .window_size((1280.0, 800.0))
-        .run()
+        .default_font(style::UI_FONT);
+    for font in style::FONT_FILES {
+        app = app.font(font);
+    }
+    app.run()
 }

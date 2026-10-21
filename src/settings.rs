@@ -34,17 +34,60 @@ impl ThemeChoice {
 impl fmt::Display for ThemeChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            ThemeChoice::System => "System theme",
-            ThemeChoice::Light => "Light theme",
-            ThemeChoice::Dark => "Dark theme",
+            ThemeChoice::System => "System",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
         })
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub theme: ThemeChoice,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: f32,
+    #[serde(default = "default_editor_height")]
+    pub editor_height: f32,
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: f32,
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+    /// Closing the window hides it to the system tray instead of quitting.
+    #[serde(default)]
+    pub minimize_to_tray: bool,
+}
+
+pub const EDITOR_FONT_SIZES: [f32; 8] = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
+pub const PAGE_SIZES: [usize; 4] = [200, 500, 1000, 2000];
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeChoice::default(),
+            sidebar_width: default_sidebar_width(),
+            editor_height: default_editor_height(),
+            editor_font_size: default_editor_font_size(),
+            page_size: default_page_size(),
+            minimize_to_tray: false,
+        }
+    }
+}
+
+fn default_sidebar_width() -> f32 {
+    300.0
+}
+
+fn default_editor_height() -> f32 {
+    280.0
+}
+
+fn default_editor_font_size() -> f32 {
+    13.0
+}
+
+fn default_page_size() -> usize {
+    500
 }
 
 impl Settings {

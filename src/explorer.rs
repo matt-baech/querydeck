@@ -2,13 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use iced::widget::{Column, button, column, container, row, space, text};
-use iced::{Alignment, Element, Length, Theme};
+use iced::widget::{Column, Text, button, column, container, row, space, text};
+use iced::{Alignment, Color, Element, Length, Theme, color};
 use iced_aw::ContextMenu;
 
 use crate::app::Message;
 use crate::db::catalog::{ColumnInfo, DbObject, ObjectKind};
-use crate::style;
+use crate::style::{self, icon};
 
 #[derive(Debug, Clone)]
 pub enum Load<T> {
@@ -51,7 +51,8 @@ pub struct Explorer {
     selected: Option<NodeKey>,
 }
 
-const INDENT: f32 = 14.0;
+const INDENT: f32 = 12.0;
+const CHEVRON: f32 = 14.0;
 
 impl Explorer {
     pub fn new(server_label: String) -> Self {
@@ -139,12 +140,22 @@ impl Explorer {
             ("Refresh", Message::RefreshExplorer),
             ("Disconnect", Message::Disconnect),
         ];
-        tree = tree.push(self.node(0, NodeKey::Server, &self.server_label, true, server_menu));
+        tree = tree.push(self.node(0, NodeKey::Server, &self.server_label, icon::server(), None, true, server_menu));
         if !self.is_open(&NodeKey::Server) {
             return tree.into();
         }
-        tree = tree.push(self.node(1, NodeKey::Databases, "Databases", true, vec![("Refresh", Message::RefreshExplorer)]));
-        if !self.is_open(&NodeKey::Databases) {
+        let dbs_open = self.is_open(&NodeKey::Databases);
+        let folder = if dbs_open { icon::folder_opened() } else { icon::folder() };
+        tree = tree.push(self.node(
+            1,
+            NodeKey::Databases,
+            "Databases",
+            folder,
+            None,
+            true,
+            vec![("Refresh", Message::RefreshExplorer)],
+        ));
+        if !dbs_open {
             return tree.into();
         }
 
@@ -154,8 +165,10 @@ impl Explorer {
         };
         for db in dbs {
             let db_key = NodeKey::Database(db.clone());
-            let db_menu = vec![("New Query", Message::NewQuery(Some(db.clone()))), ("Refresh", Message::RefreshExplorer)];
-            tree = tree.push(self.node(2, db_key.clone(), db, true, db_menu));
+            let db_menu =
+                vec![("New Query", Message::NewQuery(Some(db.clone()))), ("Refresh", Message::RefreshExplorer)];
+            tree =
+                tree.push(self.node(2, db_key.clone(), db, icon::database(), Some(style::accent_color), true, db_menu));
             if !self.is_open(&db_key) {
                 continue;
             }
@@ -183,9 +196,19 @@ impl Explorer {
     ) -> Column<'a, Message> {
         let key = NodeKey::Folder(db.to_string(), kind);
         let count = objects.iter().filter(|o| o.kind == kind).count();
-        let label = format!("{} ({count})", kind.folder_name());
-        tree = tree.push(self.node(3, key.clone(), &label, count > 0, vec![("Refresh", Message::RefreshExplorer)]));
-        if !self.is_open(&key) {
+        let open = self.is_open(&key);
+        let label = format!("{}  {count}", kind.folder_name());
+        let glyph = if open { icon::folder_opened() } else { icon::folder() };
+        tree = tree.push(self.node(
+            3,
+            key.clone(),
+            &label,
+            glyph,
+            None,
+            count > 0,
+            vec![("Refresh", Message::RefreshExplorer)],
+        ));
+        if !open {
             return tree;
         }
         for obj in objects.iter().filter(|o| o.kind == kind) {
@@ -202,13 +225,14 @@ impl Explorer {
                 menu.push(("Script", Message::Script(db.to_string(), obj.clone())));
             }
             menu.push(("New Query", Message::NewQuery(Some(db.to_string()))));
-            tree = tree.push(self.node(4, obj_key.clone(), &label, kind.is_selectable(), menu));
+            let (glyph, color) = object_icon(kind);
+            tree = tree.push(self.node(4, obj_key.clone(), &label, glyph, Some(color), kind.is_selectable(), menu));
 
             if kind.is_selectable() && self.is_open(&obj_key) {
                 match self.columns.get(&(db.to_string(), obj.id.clone())) {
                     Some(Load::Loaded(cols)) => {
                         for c in cols {
-                            tree = tree.push(leaf(5, c.to_string()));
+                            tree = tree.push(column_leaf(5, c));
                         }
                     }
                     Some(other) => tree = push_status(tree, 5, other),
@@ -223,69 +247,104 @@ impl Explorer {
         self.expanded.contains(key)
     }
 
-    /// One tree row. Left-click selects and expands it; right-click opens `menu`.
+    /// One tree row: chevron, icon, label. Left-click selects and expands
+    /// it; right-click opens `menu`.
+    #[allow(clippy::too_many_arguments)]
     fn node<'a>(
         &self,
         level: u16,
         key: NodeKey,
         label: &str,
+        glyph: Text<'a>,
+        color: Option<fn(&Theme) -> Color>,
         expandable: bool,
         menu: Vec<(&'static str, Message)>,
     ) -> Element<'a, Message> {
-        let arrow = match (expandable, self.is_open(&key)) {
-            (false, _) => " ",
-            (true, true) => "▾",
-            (true, false) => "▸",
+        let chevron: Element<'a, Message> = match (expandable, self.is_open(&key)) {
+            (false, _) => space().width(CHEVRON).into(),
+            (true, open) => style::dim(if open { icon::chevron_down() } else { icon::chevron_right() })
+                .size(12)
+                .width(CHEVRON)
+                .into(),
         };
         let selected = self.selected.as_ref() == Some(&key);
-        let content = row![text(arrow).size(13).width(12), text(label.to_string()).size(13)]
-            .spacing(4)
+        let content = row![chevron, style::icon_colored(glyph, color), text(label.to_string()).size(style::BODY)]
+            .spacing(style::S1 + 2.0)
             .align_y(Alignment::Center);
         let node = button(content)
-            .padding([2, 6])
+            .padding([3.0, style::S1])
             .width(Length::Fill)
-            .style(if selected { style::selected } else { button::text })
+            .style(if selected { style::row_selected } else { style::flat })
             .on_press(Message::Explorer(ExplorerMsg::Toggle(key)));
         row![space().width(INDENT * f32::from(level)), ContextMenu::new(node, move || context_menu(&menu))].into()
     }
 }
 
-fn leaf<'a>(level: u16, label: String) -> Element<'a, Message> {
-    row![space().width(INDENT * f32::from(level) + 22.0), text(label).size(12).style(text::secondary)]
-        .padding([1, 0])
-        .into()
+/// Icon and colour for each kind of database object.
+fn object_icon<'a>(kind: ObjectKind) -> (Text<'a>, fn(&Theme) -> Color) {
+    match kind {
+        ObjectKind::Table => (icon::table(), style::accent_color),
+        ObjectKind::View => (icon::eye(), style::accent_color),
+        ObjectKind::Procedure => (icon::symbol_method(), purple),
+        ObjectKind::Function => (icon::symbol_operator(), purple),
+        ObjectKind::Trigger => (icon::symbol_event(), warning),
+    }
+}
+
+fn purple(t: &Theme) -> Color {
+    if t.extended_palette().is_dark { color!(0xa48cb8) } else { color!(0x7a5f91) }
+}
+
+fn warning(t: &Theme) -> Color {
+    t.extended_palette().warning.base.color
+}
+
+/// A column under an expanded table: key or field icon, name, dimmed type.
+fn column_leaf<'a>(level: u16, c: &ColumnInfo) -> Element<'a, Message> {
+    let glyph = if c.primary_key {
+        style::icon_colored(icon::key(), Some(warning))
+    } else {
+        style::dim(icon::symbol_field()).size(style::ICON)
+    };
+    let detail = format!("{}{}", c.data_type, if c.nullable { ", null" } else { "" });
+    row![
+        space().width(INDENT * f32::from(level) + CHEVRON + style::S1 + 6.0),
+        glyph,
+        text(c.name.clone()).size(style::BODY),
+        style::dim(text(detail).size(style::SMALL)),
+    ]
+    .spacing(style::S1 + 2.0)
+    .padding([2, 0])
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn context_menu<'a>(items: &[(&'static str, Message)]) -> Element<'a, Message> {
-    let mut list = column![].spacing(1).width(190);
+    let mut list = column![].spacing(1).width(200);
     for (label, msg) in items {
         list = list.push(
-            button(text(*label).size(13)).width(Length::Fill).padding([4, 10]).style(button::text).on_press(msg.clone()),
+            button(text(*label).size(style::BODY))
+                .width(Length::Fill)
+                .padding([5.0, style::S3])
+                .style(style::flat)
+                .on_press(msg.clone()),
         );
     }
-    container(list).padding(4).style(menu_style).into()
-}
-
-fn menu_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(palette.background.weak.color.into()),
-        border: iced::Border { color: palette.background.strong.color, width: 1.0, radius: 6.0.into() },
-        shadow: iced::Shadow {
-            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
-            offset: iced::Vector::new(0.0, 4.0),
-            blur_radius: 12.0,
-        },
-        ..container::Style::default()
-    }
+    container(list).padding(style::S1).style(style::menu).into()
 }
 
 fn push_status<'a, T>(tree: Column<'a, Message>, level: u16, load: &Load<T>) -> Column<'a, Message> {
+    let indent = space().width(INDENT * f32::from(level) + CHEVRON + style::S1 + 6.0);
     match load {
-        Load::Loading => tree.push(leaf(level, "Loading…".into())),
+        Load::Loading => tree.push(row![indent, style::dim(text("Loading…").size(style::SMALL))].padding([2, 0])),
         Load::Failed(e) => tree.push(
-            row![space().width(INDENT * f32::from(level) + 22.0), text(e.clone()).size(12).style(text::danger)]
-                .padding([1, 0]),
+            row![
+                indent,
+                text(e.clone())
+                    .size(style::SMALL)
+                    .style(|t: &Theme| text::Style { color: Some(style::danger_color(t)) })
+            ]
+            .padding([2, 0]),
         ),
         Load::Loaded(_) => tree,
     }

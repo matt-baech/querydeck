@@ -1,12 +1,12 @@
 //! The "Connect to Server" dialog: saved profiles plus an editable form.
 
-use iced::widget::{button, checkbox, column, container, pick_list, row, rule, scrollable, space, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Length, Theme};
 
 use crate::app::Message;
 use crate::db::{Driver, Profile};
 use crate::profiles;
-use crate::style;
+use crate::style::{self, icon};
 
 #[derive(Debug, Clone)]
 pub enum FormMsg {
@@ -58,7 +58,8 @@ impl ConnectForm {
     }
 
     fn load(&mut self, profile: Profile, index: Option<usize>) {
-        self.password = if index.is_some() { profiles::load_password(&profile).unwrap_or_default() } else { String::new() };
+        self.password =
+            if index.is_some() { profiles::load_password(&profile).unwrap_or_default() } else { String::new() };
         self.port_text = profile.port.to_string();
         self.form = profile;
         self.selected = index;
@@ -170,132 +171,173 @@ impl ConnectForm {
     }
 
     pub fn view(&self, live: Option<&Profile>) -> Element<'_, Message> {
+        // Left: saved connections.
         let mut saved = column![].spacing(2);
         for (i, p) in self.profiles.iter().enumerate() {
             let is_live = live == Some(p);
-            let label = format!("{}{}", if is_live { "● " } else { "" }, p.display_name());
+            let dot: Element<'_, Message> = if is_live {
+                style::icon_colored(icon::circle_filled(), Some(style::success_color)).size(8).into()
+            } else {
+                space().width(8).into()
+            };
+            let content = row![
+                style::icon_colored(icon::server(), None),
+                column![
+                    text(p.display_name()).size(style::BODY),
+                    style::dim(text(format!("{} · {}", p.driver, p.host)).size(style::SMALL)),
+                ]
+                .spacing(1)
+                .width(Length::Fill),
+                dot,
+            ]
+            .spacing(style::S2)
+            .align_y(Alignment::Center);
             saved = saved.push(
-                button(text(label).size(14))
+                button(content)
                     .width(Length::Fill)
-                    .style(if self.selected == Some(i) { style::selected } else { button::text })
+                    .padding([style::S1 + 2.0, style::S2])
+                    .style(if self.selected == Some(i) { style::row_selected } else { style::flat })
                     .on_press(Message::Form(FormMsg::SelectProfile(i))),
             );
         }
         if self.profiles.is_empty() {
-            saved = saved.push(text("No saved connections yet.").size(13));
+            saved =
+                saved.push(container(style::dim(text("No saved connections").size(style::SMALL))).padding(style::S2));
         }
-        let saved_pane = column![
-            row![
-                text("Saved").size(14),
-                space().width(Length::Fill),
-                button(text("+ New").size(13)).style(button::text).on_press(Message::Form(FormMsg::NewProfile)),
+        let saved_pane = container(
+            column![
+                row![
+                    style::section_title("Saved"),
+                    space().width(Length::Fill),
+                    style::tip(
+                        style::tool_button(
+                            icon::add().size(style::ICON),
+                            None,
+                            Some(Message::Form(FormMsg::NewProfile))
+                        ),
+                        "New connection",
+                    ),
+                ]
+                .align_y(Alignment::Center),
+                scrollable(saved).height(Length::Fill),
             ]
-            .align_y(Alignment::Center),
-            scrollable(saved).height(Length::Fill),
-        ]
-        .spacing(6)
-        .width(200);
+            .spacing(style::S2),
+        )
+        .padding(style::S3)
+        .width(230)
+        .height(Length::Fill)
+        .style(style::chrome_panel);
 
+        // Right: the form.
         let f = &self.form;
         let field = |label: &'static str, input: Element<'static, Message>| -> Element<'static, Message> {
-            column![text(label).size(12), input].spacing(2).into()
+            column![style::dim(text(label).size(style::SMALL)), input].spacing(style::S1).into()
         };
         let form_msg = |m: fn(String) -> FormMsg| move |v: String| Message::Form(m(v));
+        let input = |placeholder: &'static str, value: &str| {
+            text_input(placeholder, value).style(style::input).size(style::BODY).padding([style::S1 + 2.0, style::S2])
+        };
         let mut form = column![
-            field("Name", text_input("My server", &f.name).style(style::input).on_input(form_msg(FormMsg::Name)).into()),
+            field("Name", input("My server", &f.name).on_input(form_msg(FormMsg::Name)).into()),
             field(
                 "Server type",
                 pick_list(&Driver::ALL[..], Some(f.driver), |d| Message::Form(FormMsg::Driver(d)))
+                    .text_size(style::BODY)
+                    .padding([style::S1 + 2.0, style::S2])
                     .width(Length::Fill)
                     .into()
             ),
             row![
-                field("Host", text_input("localhost", &f.host).style(style::input).on_input(form_msg(FormMsg::Host)).into()),
-                container(field("Port", text_input("", &self.port_text).style(style::input).on_input(form_msg(FormMsg::Port)).into()))
-                    .width(90),
+                field("Host", input("localhost", &f.host).on_input(form_msg(FormMsg::Host)).into()),
+                container(field("Port", input("", &self.port_text).on_input(form_msg(FormMsg::Port)).into())).width(90),
             ]
-            .spacing(8),
+            .spacing(style::S2),
             row![
-                field("User", text_input("", &f.user).style(style::input).on_input(form_msg(FormMsg::User)).into()),
+                field("User", input("", &f.user).on_input(form_msg(FormMsg::User)).into()),
                 field(
                     "Password",
-                    text_input("", &self.password).style(style::input)
+                    input("", &self.password)
                         .secure(true)
                         .on_input(form_msg(FormMsg::Password))
                         .on_submit(Message::Connect)
                         .into()
                 ),
             ]
-            .spacing(8),
-            field("Database", text_input("", &f.database).style(style::input).on_input(form_msg(FormMsg::Database)).into()),
+            .spacing(style::S2),
+            field("Database", input("", &f.database).on_input(form_msg(FormMsg::Database)).into()),
         ]
-        .spacing(10);
-        let mut options = row![
+        .spacing(style::S3);
+        let mut options = column![
             checkbox(self.save_password)
                 .label("Save password in keyring")
                 .on_toggle(|v| Message::Form(FormMsg::SavePassword(v)))
-                .size(16)
-                .text_size(14)
+                .size(14)
+                .text_size(style::BODY)
         ]
-        .spacing(16);
+        .spacing(style::S2);
         if f.driver == Driver::SqlServer {
             options = options.push(
                 checkbox(f.trust_cert)
                     .label("Trust server certificate")
                     .on_toggle(|v| Message::Form(FormMsg::TrustCert(v)))
-                    .size(16)
-                    .text_size(14),
+                    .size(14)
+                    .text_size(style::BODY),
             );
         }
-        form = form.push(options);
+        form = form.push(container(options).padding([style::S1, 0.0]));
 
         let notice: Element<'_, Message> = match &self.notice {
-            Some(Ok(m)) => text(m).size(13).into(),
-            Some(Err(m)) => text(m).size(13).style(text::danger).into(),
+            Some(Ok(m)) => style::dim(text(m).size(style::SMALL)).into(),
+            Some(Err(m)) => {
+                text(m).size(style::SMALL).style(|t: &Theme| text::Style { color: Some(style::danger_color(t)) }).into()
+            }
             None => space().into(),
         };
 
+        let dialog_button =
+            |label: &'static str| button(text(label).size(style::BODY)).padding([style::S1 + 2.0, style::S3]);
         let connect_btn = if self.connecting {
-            button("Connecting…")
+            dialog_button("Connecting…").style(style::success)
         } else {
-            button("Connect").on_press(Message::Connect).style(style::success)
+            dialog_button("Connect").style(style::success).on_press(Message::Connect)
         };
+        let delete_btn = style::tip(
+            style::tool_button(
+                style::icon_colored(icon::trash(), Some(style::danger_color)),
+                None,
+                self.selected.map(|_| Message::Form(FormMsg::Delete)),
+            ),
+            "Delete saved connection",
+        );
         let actions = row![
-            button("Save").on_press(Message::Form(FormMsg::Save)).style(style::neutral),
-            button("Delete")
-                .on_press_maybe(self.selected.map(|_| Message::Form(FormMsg::Delete)))
-                .style(style::danger),
+            delete_btn,
+            notice,
             space().width(Length::Fill),
-            button("Close").on_press(Message::CloseDialog).style(button::text),
+            dialog_button("Save").style(style::neutral).on_press(Message::Form(FormMsg::Save)),
             connect_btn,
         ]
-        .spacing(8)
+        .spacing(style::S2)
         .align_y(Alignment::Center);
 
-        let body = column![
-            text("Connect to Server").size(20),
-            rule::horizontal(1),
-            row![saved_pane, rule::vertical(1), form.width(Length::Fill)].spacing(14).height(330),
-            notice,
-            actions,
+        let title = row![
+            text("Connect to Server").size(style::TITLE).font(style::UI_BOLD),
+            space().width(Length::Fill),
+            style::tip(
+                style::tool_button(icon::close().size(style::ICON), None, Some(Message::CloseDialog)),
+                "Close (Esc)"
+            ),
         ]
-        .spacing(12);
+        .align_y(Alignment::Center);
 
-        container(body).width(720).padding(18).style(dialog_style).into()
-    }
-}
+        let right =
+            column![title, form, space().height(Length::Fill), actions].spacing(style::S4).padding(style::S4 + 4.0);
 
-fn dialog_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(palette.background.base.color.into()),
-        border: iced::Border { color: palette.background.strong.color, width: 1.0, radius: 8.0.into() },
-        shadow: iced::Shadow {
-            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5),
-            offset: iced::Vector::new(0.0, 6.0),
-            blur_radius: 24.0,
-        },
-        ..container::Style::default()
+        container(row![saved_pane, right.width(Length::Fill)])
+            .width(760)
+            .height(530)
+            .clip(true)
+            .style(style::dialog)
+            .into()
     }
 }
 

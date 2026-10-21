@@ -66,13 +66,22 @@ pub struct ColumnInfo {
 
 impl fmt::Display for ColumnInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({}{}, {})", self.name, if self.primary_key { "PK, " } else { "" }, self.data_type, if self.nullable { "null" } else { "not null" })
+        write!(
+            f,
+            "{} ({}{}, {})",
+            self.name,
+            if self.primary_key { "PK, " } else { "" },
+            self.data_type,
+            if self.nullable { "null" } else { "not null" }
+        )
     }
 }
 
 pub async fn databases(conn: Connection) -> Result<Vec<String>, String> {
     let sql = match conn.driver() {
-        Driver::SqlServer => "SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name",
+        Driver::SqlServer => {
+            "SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name"
+        }
         // A Postgres connection can only see objects in its own database.
         Driver::Postgres => "SELECT current_database()",
     };
@@ -171,13 +180,17 @@ pub async fn columns(conn: Connection, database: String, object: DbObject) -> Re
 pub async fn definition(conn: Connection, database: String, object: DbObject) -> Result<String, String> {
     let id = numeric_id(&object.id)?;
     let sql = match conn.driver() {
-        Driver::SqlServer => format!("SELECT OBJECT_DEFINITION({id}) FROM {}.sys.objects WHERE object_id = {id}", mssql_ident(&database)),
+        Driver::SqlServer => {
+            format!("SELECT OBJECT_DEFINITION({id}) FROM {}.sys.objects WHERE object_id = {id}", mssql_ident(&database))
+        }
         Driver::Postgres => match object.kind {
             ObjectKind::View => format!(
                 "SELECT 'CREATE OR REPLACE VIEW ' || {}::regclass::text || ' AS' || chr(10) || pg_get_viewdef({id}::oid, true)",
                 id
             ),
-            ObjectKind::Procedure | ObjectKind::Function => format!("SELECT pg_get_functiondef({id}::oid)"),
+            ObjectKind::Procedure | ObjectKind::Function => {
+                format!("SELECT pg_get_functiondef({id}::oid)")
+            }
             ObjectKind::Trigger => format!("SELECT pg_get_triggerdef({id}::oid, true) || ';'"),
             ObjectKind::Table => return Err("Tables have no definition to script.".into()),
         },
@@ -197,12 +210,12 @@ pub async fn definition(conn: Connection, database: String, object: DbObject) ->
 /// Script that opens in a new query tab for "Select Top 1000".
 pub fn select_top_script(driver: Driver, object: &DbObject) -> String {
     match driver {
-        Driver::SqlServer => format!(
-            "SELECT TOP (1000) *\nFROM {}.{};\n",
-            mssql_ident(&object.schema),
-            mssql_ident(&object.name)
-        ),
-        Driver::Postgres => format!("SELECT *\nFROM {}.{}\nLIMIT 1000;\n", pg_ident(&object.schema), pg_ident(&object.name)),
+        Driver::SqlServer => {
+            format!("SELECT TOP (1000) *\nFROM {}.{};\n", mssql_ident(&object.schema), mssql_ident(&object.name))
+        }
+        Driver::Postgres => {
+            format!("SELECT *\nFROM {}.{}\nLIMIT 1000;\n", pg_ident(&object.schema), pg_ident(&object.name))
+        }
     }
 }
 

@@ -2,16 +2,18 @@ use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
-use iced::widget::{button, center, column, container, opaque, pick_list, row, rule, scrollable, space, stack, text};
-use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme};
+use iced::widget::{button, center, column, container, opaque, row, scrollable, space, stack, text};
+use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
 
 use crate::connect::{ConnectForm, FormMsg};
 use crate::db::catalog::{self, DbObject};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Request};
-use crate::query_tab::{QueryTab, ResultsPane};
+use crate::preferences::{self, TrayStatus};
+use crate::query_tab::{QueryTab, ResultsPane, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
-use crate::style;
+use crate::style::{self, icon};
+use crate::tray::{self, TrayEvent};
 
 const SAMPLE_SQL: &str = "-- F5 or Ctrl+Enter runs the script (or just the selection).\n\
 -- SQL Server scripts can be split into batches with GO.\n\nSELECT 1 AS hello;\n";
@@ -19,7 +21,18 @@ const SAMPLE_SQL: &str = "-- F5 or Ctrl+Enter runs the script (or just the selec
 #[derive(Debug, Clone)]
 pub enum Message {
     // Appearance
+    OpenSettings,
+    CloseSettings,
     SetTheme(ThemeChoice),
+    SetEditorFontSize(f32),
+    SetPageSize(usize),
+    SetMinimizeToTray(bool),
+    Tray(TrayEvent),
+    CloseRequested,
+    Resized(iced::Size),
+    DragStart(Drag),
+    DragMove(Point),
+    DragEnd,
     SystemTheme(Mode),
 
     // Connect dialog
@@ -74,8 +87,33 @@ pub struct App {
 
     status: Status,
     settings: Settings,
+    drag: Option<DragState>,
+    settings_open: bool,
+    tray: TrayStatus,
+    /// The main window, or `None` while litedb sits in the tray.
+    window: Option<window::Id>,
+    window_size: iced::Size,
     /// Light or dark, as the desktop currently prefers.
     system_mode: Mode,
+}
+
+/// Sidebar width limits. The minimum keeps the explorer header (title and
+/// three icon buttons) fully visible.
+const SIDEBAR_MIN: f32 = 240.0;
+const SIDEBAR_MAX: f32 = 700.0;
+
+/// A pane splitter the user can drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drag {
+    Sidebar,
+    Editor,
+}
+
+struct DragState {
+    drag: Drag,
+    anchor: Option<Point>,
+    /// Pane size when the drag started.
+    start: f32,
 }
 
 enum Status {
@@ -97,20 +135,33 @@ impl App {
             next_tab_id: 1,
             status: Status::Idle,
             settings: Settings::load(),
+            drag: None,
+            settings_open: false,
+            tray: TrayStatus::Off,
+            window: None,
+            window_size: iced::Size::new(1280.0, 800.0),
             system_mode: Mode::Dark,
         };
         app.open_tab(None, SAMPLE_SQL, None);
-        (app, iced::system::theme().map(Message::SystemTheme))
+        if app.settings.minimize_to_tray {
+            app.tray = TrayStatus::Starting;
+        }
+        let open = app.open_window();
+        (app, Task::batch([open, iced::system::theme().map(Message::SystemTheme)]))
     }
 
-    pub fn title(&self) -> String {
+    pub fn title(&self, _window: window::Id) -> String {
         match &self.session {
             Some(s) => format!("litedb — {}", s.profile.display_name()),
             None => "litedb".into(),
         }
     }
 
-    pub fn theme(&self) -> Theme {
+    pub fn theme(&self, _window: window::Id) -> Theme {
+        self.current_theme()
+    }
+
+    fn current_theme(&self) -> Theme {
         self.settings.theme.resolve(self.system_mode)
     }
 
@@ -121,7 +172,67 @@ impl App {
             keyboard::Event::KeyPressed { key, modifiers, .. } => shortcut(&key, modifiers),
             _ => None,
         });
-        Subscription::batch([keys, iced::system::theme_changes().map(Message::SystemTheme)])
+        let mut subs = vec![
+            keys,
+            iced::system::theme_changes().map(Message::SystemTheme),
+            window::close_requests().map(|_| Message::CloseRequested),
+            window::resize_events().map(|(_, size)| Message::Resized(size)),
+        ];
+        if self.settings.minimize_to_tray {
+            subs.push(tray::subscription().map(Message::Tray));
+        }
+        // Track the mouse only while a splitter is being dragged.
+        if self.drag.is_some() {
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(Message::DragMove(position)),
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(Message::DragEnd),
+                _ => None,
+            }));
+        }
+        Subscription::batch(subs)
+    }
+
+    fn open_window(&mut self) -> Task<Message> {
+        let (id, open) = window::open(window::Settings {
+            size: self.window_size,
+            min_size: Some(iced::Size::new(720.0, 480.0)),
+            // Closing is decided in `CloseRequested` (quit or go to the tray).
+            exit_on_close_request: false,
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: "litedb".into(),
+                ..Default::default()
+            },
+            ..window::Settings::default()
+        });
+        self.window = Some(id);
+        open.discard()
+    }
+
+    /// Closes the window but keeps running in the tray.
+    fn hide_window(&mut self) -> Task<Message> {
+        self.drag = None;
+        match self.window.take() {
+            Some(id) => window::close(id),
+            None => Task::none(),
+        }
+    }
+
+    fn show_window(&mut self) -> Task<Message> {
+        match self.window {
+            Some(id) => window::gain_focus(id),
+            None => self.open_window(),
+        }
+    }
+
+    /// Closes every connection, then exits.
+    fn quit(&mut self) -> Task<Message> {
+        self.end_session().chain(iced::exit())
+    }
+
+    fn save_settings(&mut self) {
+        if let Err(e) = self.settings.save() {
+            self.status = Status::Error(e);
+        }
     }
 
     fn active_tab(&mut self) -> Option<&mut QueryTab> {
@@ -144,10 +255,65 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::OpenSettings => self.settings_open = true,
+            Message::CloseSettings => self.settings_open = false,
             Message::SetTheme(choice) => {
                 self.settings.theme = choice;
-                if let Err(e) = self.settings.save() {
-                    self.status = Status::Error(e);
+                self.save_settings();
+            }
+            Message::SetEditorFontSize(size) => {
+                self.settings.editor_font_size = size;
+                self.save_settings();
+            }
+            Message::SetPageSize(size) => {
+                self.settings.page_size = size;
+                for tab in &mut self.tabs {
+                    tab.page = 0;
+                }
+                self.save_settings();
+            }
+            Message::SetMinimizeToTray(on) => {
+                self.settings.minimize_to_tray = on;
+                self.tray = if on { TrayStatus::Starting } else { TrayStatus::Off };
+                self.save_settings();
+            }
+            Message::Tray(event) => match event {
+                TrayEvent::Ready => self.tray = TrayStatus::Ready,
+                TrayEvent::Unavailable(e) => self.tray = TrayStatus::Unavailable(e),
+                TrayEvent::Toggle if self.window.is_none() => return self.show_window(),
+                TrayEvent::Toggle => return self.hide_window(),
+                TrayEvent::Show => return self.show_window(),
+                TrayEvent::Quit => return self.quit(),
+            },
+            Message::CloseRequested => {
+                if self.settings.minimize_to_tray && self.tray == TrayStatus::Ready {
+                    return self.hide_window();
+                }
+                return self.quit();
+            }
+            Message::Resized(size) => self.window_size = size,
+            Message::DragStart(drag) => {
+                let start = match drag {
+                    Drag::Sidebar => self.settings.sidebar_width,
+                    Drag::Editor => self.settings.editor_height,
+                };
+                self.drag = Some(DragState { drag, anchor: None, start });
+            }
+            Message::DragMove(p) => {
+                if let Some(d) = &mut self.drag {
+                    // The first move after the press becomes the anchor point.
+                    let anchor = *d.anchor.get_or_insert(p);
+                    match d.drag {
+                        Drag::Sidebar => {
+                            self.settings.sidebar_width = (d.start + p.x - anchor.x).clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+                        }
+                        Drag::Editor => self.settings.editor_height = (d.start + p.y - anchor.y).clamp(60.0, 2000.0),
+                    }
+                }
+            }
+            Message::DragEnd => {
+                if self.drag.take().is_some() {
+                    self.save_settings();
                 }
             }
             Message::SystemTheme(mode) => self.system_mode = mode,
@@ -191,13 +357,17 @@ impl App {
                 }
             }
             Message::SelectTop(database, obj) => {
-                let Some(session) = &self.session else { return Task::none() };
+                let Some(session) = &self.session else {
+                    return Task::none();
+                };
                 let sql = catalog::select_top_script(session.profile.driver, &obj);
                 let id = self.open_tab(Some(obj.qualified_name()), &sql, Some(database));
                 return self.run_tab(id);
             }
             Message::Script(database, obj) => {
-                let Some(session) = &self.session else { return Task::none() };
+                let Some(session) = &self.session else {
+                    return Task::none();
+                };
                 let conn = session.explorer_conn.clone();
                 let title = obj.qualified_name();
                 self.status = Status::Info(format!("Scripting {title}…"));
@@ -218,7 +388,9 @@ impl App {
 
             Message::SelectTab(id) => self.active = id,
             Message::CloseTab(id) => {
-                let Some(pos) = self.tabs.iter().position(|t| t.id == id) else { return Task::none() };
+                let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+                    return Task::none();
+                };
                 let mut tab = self.tabs.remove(pos);
                 let close = close_conn(tab.take_connection());
                 if self.active == id && !self.tabs.is_empty() {
@@ -233,13 +405,21 @@ impl App {
             }
             Message::Run => return self.run_tab(self.active),
             Message::Cancel => {
-                // Esc closes the dialog when it is open.
+                // Esc closes an open dialog first.
+                if self.settings_open {
+                    self.settings_open = false;
+                    return Task::none();
+                }
                 if self.dialog_open {
                     self.dialog_open = false;
                     return Task::none();
                 }
-                let Some(tab) = self.active_tab() else { return Task::none() };
-                let Some(handle) = tab.running.take() else { return Task::none() };
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                let Some(handle) = tab.running.take() else {
+                    return Task::none();
+                };
                 handle.abort();
                 let conn = tab.conn.clone();
                 self.status = Status::Info("Cancelling…".into());
@@ -327,12 +507,14 @@ impl App {
     }
 
     fn fetch(&self, request: Request) -> Task<Message> {
-        let Some(session) = &self.session else { return Task::none() };
+        let Some(session) = &self.session else {
+            return Task::none();
+        };
         let conn = session.explorer_conn.clone();
         match request {
-            Request::Databases => Task::perform(catalog::databases(conn), |r| {
-                Message::Explorer(ExplorerMsg::DatabasesLoaded(r))
-            }),
+            Request::Databases => {
+                Task::perform(catalog::databases(conn), |r| Message::Explorer(ExplorerMsg::DatabasesLoaded(r)))
+            }
             Request::Objects(db) => Task::perform(catalog::objects(conn, db.clone()), move |r| {
                 Message::Explorer(ExplorerMsg::ObjectsLoaded(db.clone(), r))
             }),
@@ -353,11 +535,15 @@ impl App {
         };
         let mut profile = session.profile.clone();
         let password = session.password.clone();
-        let Some(tab) = self.tab(id) else { return Task::none() };
+        let Some(tab) = self.tab(id) else {
+            return Task::none();
+        };
         if tab.running.is_some() {
             return Task::none();
         }
-        let Some(sql) = tab.sql_to_run() else { return Task::none() };
+        let Some(sql) = tab.sql_to_run() else {
+            return Task::none();
+        };
 
         if tab.conn.is_some() {
             return self.execute(id, sql);
@@ -374,8 +560,12 @@ impl App {
     }
 
     fn execute(&mut self, id: u64, sql: String) -> Task<Message> {
-        let Some(tab) = self.tab(id) else { return Task::none() };
-        let Some(conn) = tab.conn.clone() else { return Task::none() };
+        let Some(tab) = self.tab(id) else {
+            return Task::none();
+        };
+        let Some(conn) = tab.conn.clone() else {
+            return Task::none();
+        };
         let (task, handle) =
             Task::perform(conn.run(sql), move |outcome| Message::QueryFinished(id, Arc::new(outcome))).abortable();
         tab.running = Some(handle);
@@ -385,16 +575,14 @@ impl App {
 
     // ---------------------------------------------------------------- view
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, _window: window::Id) -> Element<'_, Message> {
         let main = column![self.tab_strip(), self.active_tab_view()].width(Length::Fill);
-        let body = if self.sidebar_open {
-            row![self.sidebar(), rule::vertical(1), main]
-        } else {
-            row![main]
-        };
-        let base = column![body.height(Length::Fill), rule::horizontal(1), self.status_bar()];
+        let body = if self.sidebar_open { row![self.sidebar(), splitter(Drag::Sidebar), main] } else { row![main] };
+        let base = column![body.height(Length::Fill), horizontal_divider(), self.status_bar()];
 
-        if self.dialog_open {
+        if self.settings_open {
+            stack![base, opaque(center(preferences::view(&self.settings, &self.tray)).style(backdrop))].into()
+        } else if self.dialog_open {
             let live = self.session.as_ref().map(|s| &s.profile);
             stack![base, opaque(center(self.form.view(live)).style(backdrop))].into()
         } else {
@@ -405,55 +593,89 @@ impl App {
     fn sidebar(&self) -> Element<'_, Message> {
         let connected = self.session.is_some();
         let header = row![
-            text("Object Explorer").size(15),
+            style::section_title("Object Explorer"),
             space().width(Length::Fill),
-            small_button("Connect…", Some(Message::OpenDialog)),
-            small_button("⟳", connected.then_some(Message::RefreshExplorer)),
-            small_button("Disconnect", connected.then_some(Message::Disconnect)),
+            style::tip(style::tool_button(icon::plug().size(style::ICON), None, Some(Message::OpenDialog)), "Connect…"),
+            style::tip(
+                style::tool_button(
+                    icon::refresh().size(style::ICON),
+                    None,
+                    connected.then_some(Message::RefreshExplorer)
+                ),
+                "Refresh",
+            ),
+            style::tip(
+                style::tool_button(
+                    icon::debug_disconnect().size(style::ICON),
+                    None,
+                    connected.then_some(Message::Disconnect)
+                ),
+                "Disconnect",
+            ),
         ]
-        .spacing(4)
+        .spacing(2)
+        .padding([style::S1, style::S1])
         .align_y(Alignment::Center);
 
         let tree: Element<'_, Message> = match &self.explorer {
-            Some(explorer) => scrollable(explorer.view()).height(Length::Fill).into(),
+            Some(explorer) => scrollable(container(explorer.view()).padding([style::S1, style::S1]))
+                .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6).scroller_width(6)))
+                .height(Length::Fill)
+                .into(),
             None => container(
                 column![
-                    text("Not connected.").size(14),
-                    button("Connect…").on_press(Message::OpenDialog).style(style::success),
+                    style::icon_colored(icon::server(), None).size(32),
+                    style::dim(text("Not connected").size(style::BODY)),
+                    button(text("Connect…").size(style::BODY))
+                        .padding([style::S1 + 2.0, style::S3])
+                        .style(style::success)
+                        .on_press(Message::OpenDialog),
                 ]
-                .spacing(10)
+                .spacing(style::S3)
                 .align_x(Alignment::Center),
             )
             .center(Length::Fill)
             .into(),
         };
 
-        container(column![header, rule::horizontal(1), tree].spacing(6))
-            .padding(8)
-            .width(320)
+        container(column![container(header).padding([0.0, style::S1]), tree])
+            .width(self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX))
             .height(Length::Fill)
+            .style(style::chrome_panel)
             .into()
     }
 
     fn tab_strip(&self) -> Element<'_, Message> {
-        let mut strip = row![
-            button(text(if self.sidebar_open { "«" } else { "»" }).size(14))
-                .style(button::text)
-                .on_press(Message::ToggleSidebar)
-        ]
+        let toggle_icon = if self.sidebar_open { icon::layout_sidebar_left() } else { icon::layout_sidebar_left_off() };
+        let mut strip = row![style::tip(
+            style::tool_button(toggle_icon.size(style::ICON), None, Some(Message::ToggleSidebar)),
+            "Toggle Object Explorer",
+        )]
         .spacing(2)
-        .align_y(Alignment::Center);
+        .align_y(Alignment::End);
         for tab in &self.tabs {
             let active = tab.id == self.active;
-            let busy = if tab.running.is_some() { "⏳ " } else { "" };
+            let lead: Element<'_, Message> = if tab.running.is_some() {
+                style::icon_colored(icon::sync(), Some(style::accent_color)).size(12).into()
+            } else {
+                style::icon_colored(icon::file_code(), if active { Some(style::accent_color) } else { None })
+                    .size(12)
+                    .into()
+            };
+            let label = row![lead, text(tab.title.as_str()).size(style::BODY)]
+                .spacing(style::S1 + 2.0)
+                .align_y(Alignment::Center);
             strip = strip.push(
                 container(
                     row![
-                        button(text(format!("{busy}{}", tab.title)).size(13))
+                        button(label)
                             .style(move |t: &Theme, s| tab_button(t, s, active))
-                            .padding([6, 10])
+                            .padding([style::S2 - 1.0, style::S3])
                             .on_press(Message::SelectTab(tab.id)),
-                        button(text("×").size(13)).style(move |t: &Theme, s| tab_button(t, s, active)).padding([6, 8]).on_press(Message::CloseTab(tab.id)),
+                        button(icon::close().size(12))
+                            .style(move |t: &Theme, s| tab_button(t, s, active))
+                            .padding(iced::Padding { top: 6.0, right: style::S2, bottom: 6.0, left: 0.0 })
+                            .on_press(Message::CloseTab(tab.id)),
                     ]
                     .align_y(Alignment::Center),
                 )
@@ -461,24 +683,36 @@ impl App {
             );
         }
         strip = strip.push(
-            button(text("+").size(14)).style(button::text).on_press(Message::NewQuery(None)),
+            container(style::tip(
+                style::tool_button(icon::add().size(style::ICON), None, Some(Message::NewQuery(None))),
+                "New query (Ctrl+N)",
+            ))
+            .padding([2, 0]),
         );
-        container(scrollable(strip).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(4).scroller_width(4))))
-            .padding(iced::Padding { top: 4.0, right: 6.0, bottom: 0.0, left: 6.0 })
-            .width(Length::Fill)
-            .style(style::tab_strip)
-            .into()
+        container(
+            scrollable(strip)
+                .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(3).scroller_width(3))),
+        )
+        .padding(iced::Padding { top: style::S1, right: style::S2, bottom: 0.0, left: style::S1 })
+        .width(Length::Fill)
+        .style(style::chrome_panel)
+        .into()
     }
 
     fn active_tab_view(&self) -> Element<'_, Message> {
         match self.tabs.iter().find(|t| t.id == self.active) {
-            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.theme())),
+            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings),
             None => container(
                 column![
-                    text("No open queries").size(16),
-                    button("New Query (Ctrl+N)").on_press(Message::NewQuery(None)).style(style::neutral),
+                    style::dim(icon::file_code().size(32)),
+                    style::dim(text("No open queries").size(style::BODY)),
+                    button(text("New Query").size(style::BODY))
+                        .padding([style::S1 + 2.0, style::S3])
+                        .style(style::neutral)
+                        .on_press(Message::NewQuery(None)),
+                    style::dim(text("Ctrl+N").size(style::SMALL)),
                 ]
-                .spacing(10)
+                .spacing(style::S3)
                 .align_x(Alignment::Center),
             )
             .center(Length::Fill)
@@ -487,31 +721,61 @@ impl App {
     }
 
     fn status_bar(&self) -> Element<'_, Message> {
-        let (msg, style): (&str, fn(&Theme) -> text::Style) = match &self.status {
-            Status::Idle => ("Ready", text::default),
-            Status::Info(s) => (s, text::default),
-            Status::Error(s) => (s, text::danger),
-        };
-        let server = match &self.session {
-            Some(s) => format!("{} · {}@{}:{}", s.profile.driver, s.profile.user, s.profile.host, s.profile.port),
-            None => "Not connected".into(),
-        };
-        container(
-            row![
-                text(msg).size(13).style(style),
-                space().width(Length::Fill),
-                text(server).size(13).style(text::secondary),
-                pick_list(&ThemeChoice::ALL[..], Some(self.settings.theme), Message::SetTheme)
-                    .text_size(12)
-                    .padding([2, 8]),
+        let message: Element<'_, Message> = match &self.status {
+            Status::Idle => style::dim(text("Ready").size(style::SMALL)).into(),
+            Status::Info(s) => text(s.as_str()).size(style::SMALL).into(),
+            Status::Error(s) => row![
+                style::icon_colored(icon::error(), Some(style::danger_color)).size(12),
+                text(s.as_str())
+                    .size(style::SMALL)
+                    .style(|t: &Theme| text::Style { color: Some(style::danger_color(t)) }),
             ]
-            .spacing(12)
+            .spacing(style::S1)
+            .align_y(Alignment::Center)
+            .into(),
+        };
+
+        let mut bar = row![message, space().width(Length::Fill)].spacing(style::S4).align_y(Alignment::Center);
+
+        // Result summary for the active tab, like ADS.
+        if let Some(outcome) =
+            self.tabs.iter().find(|t| t.id == self.active).and_then(|t| t.outcome.as_ref().map(|o| (o, t.result_index)))
+        {
+            let (o, i) = outcome;
+            if let Some(set) = o.results.get(i) {
+                bar = bar.push(segment(icon::list_flat(), format!("{} rows", set.rows.len())));
+            }
+            bar = bar.push(segment(icon::watch(), format!("{:.3}s", o.elapsed.as_secs_f64())));
+        }
+
+        bar = bar.push(match &self.session {
+            Some(s) => row![
+                style::icon_colored(icon::circle_filled(), Some(style::success_color)).size(9),
+                text(format!("{} · {}@{}:{}", s.profile.driver, s.profile.user, s.profile.host, s.profile.port))
+                    .size(style::SMALL),
+            ]
+            .spacing(style::S1 + 2.0)
             .align_y(Alignment::Center),
-        )
-        .padding([4, 10])
-        .width(Length::Fill)
-        .into()
+            None => row![style::dim(icon::circle_filled().size(9)), text("Not connected").size(style::SMALL),]
+                .spacing(style::S1 + 2.0)
+                .align_y(Alignment::Center),
+        });
+
+        bar = bar.push(style::tip(
+            button(icon::settings_gear().size(12))
+                .padding([1.0, style::S1])
+                .style(style::flat)
+                .on_press(Message::OpenSettings),
+            "Settings (Ctrl+,)",
+        ));
+
+        container(bar).padding([3.0, style::S3]).width(Length::Fill).style(style::status_bar).into()
     }
+}
+
+/// One status-bar section: small icon and text.
+fn segment<'a>(glyph: iced::widget::Text<'a>, label: String) -> Element<'a, Message> {
+    row![glyph.size(12), text(label).size(style::SMALL)].spacing(style::S1).align_y(Alignment::Center).into()
 }
 
 pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
@@ -520,6 +784,7 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
         Key::Named(Named::Enter) if modifiers.command() => Some(Message::Run),
         Key::Named(Named::Escape) => Some(Message::Cancel),
         Key::Character(c) if modifiers.command() && c.as_str() == "n" => Some(Message::NewQuery(None)),
+        Key::Character(c) if modifiers.command() && c.as_str() == "," => Some(Message::OpenSettings),
         _ => None,
     }
 }
@@ -529,10 +794,6 @@ fn close_conn(conn: Option<Connection>) -> Task<Message> {
         Some(c) => Task::future(c.close()).discard(),
         None => Task::none(),
     }
-}
-
-fn small_button(label: &str, msg: Option<Message>) -> iced::widget::Button<'_, Message> {
-    button(text(label).size(12)).padding([3, 7]).style(style::neutral).on_press_maybe(msg)
 }
 
 fn backdrop(_theme: &Theme) -> container::Style {
@@ -546,7 +807,7 @@ fn tab_button(theme: &Theme, status: button::Status, active: bool) -> button::St
     let text_color = match status {
         _ if active => text,
         button::Status::Hovered | button::Status::Pressed => text,
-        _ => text.scale_alpha(0.6),
+        _ => text.scale_alpha(0.55),
     };
-    button::Style { text_color, ..button::text(theme, status) }
+    button::Style { text_color, ..style::flat(theme, status) }
 }

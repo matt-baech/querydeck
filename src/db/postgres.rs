@@ -48,7 +48,9 @@ impl Conn {
         Ok(msgs
             .into_iter()
             .filter_map(|m| match m {
-                SimpleQueryMessage::Row(r) => Some((0..r.len()).map(|i| r.get(i).unwrap_or(NULL).to_string()).collect()),
+                SimpleQueryMessage::Row(r) => {
+                    Some((0..r.len()).map(|i| r.get(i).unwrap_or(NULL).to_string()).collect())
+                }
                 _ => None,
             })
             .collect())

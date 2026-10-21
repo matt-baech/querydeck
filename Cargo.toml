@@ -2,6 +2,8 @@
 name = "litedb"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "Lightweight desktop SQL client for SQL Server and PostgreSQL"
 
 [dependencies]
 chrono = "0.4.45"
@@ -9,6 +11,7 @@ directories = "6.0.0"
 futures-util = "0.3.34"
 iced = { version = "0.14.0", features = ["tokio", "highlighter", "linux-theme-detection"] }
 iced_aw = { version = "0.14", default-features = false, features = ["context_menu"] }
+iced_fonts = { version = "0.3", features = ["codicon"] }
 keyring = "4.2.0"
 rust_decimal = "1.43.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,3 +21,8 @@ tokio = { version = "1.54.0", features = ["rt-multi-thread", "net", "sync", "mac
 tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
 tokio-util = { version = "0.7.20", features = ["compat"] }
 uuid = "1.28.0"
+
+# The tray uses the freedesktop StatusNotifierItem protocol (KDE, GNOME with
+# AppIndicator, etc.); other platforms get a stub for now.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
