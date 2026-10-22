@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
@@ -13,6 +14,7 @@ use crate::connect::{ConnectForm, FormMsg};
 use crate::db::catalog::{self, DbObject, SchemaInfo};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Load, Request};
+use crate::files;
 use crate::preferences::{self, TrayStatus};
 use crate::query_tab::{QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
@@ -57,6 +59,18 @@ pub enum Message {
     ScriptLoaded(String, String, Result<String, String>),
     NewQuery(Option<String>),
 
+    // Files
+    OpenFile,
+    OpenPaths(Vec<PathBuf>),
+    FileLoaded(PathBuf, Result<String, String>),
+    Save,
+    SaveAs,
+    SavePicked(u64, Option<PathBuf>, AfterSave),
+    /// The unsaved-changes prompt: save, don't save, or cancel.
+    ConfirmSave,
+    ConfirmDiscard,
+    ConfirmCancel,
+
     // Query tabs
     SelectTab(u64),
     CloseTab(u64),
@@ -97,6 +111,8 @@ pub struct App {
     tabs: Vec<QueryTab>,
     active: u64,
     next_tab_id: u64,
+    /// An unsaved-changes prompt waiting for an answer.
+    confirm: Option<Confirm>,
     /// Autocomplete metadata per database, loaded on first use.
     schemas: HashMap<String, Load<Arc<SchemaInfo>>>,
 
@@ -149,6 +165,7 @@ impl App {
             active: 0,
             next_tab_id: 1,
             schemas: HashMap::new(),
+            confirm: None,
             status: Status::Idle,
             settings: Settings::load(),
             drag: None,
@@ -163,7 +180,10 @@ impl App {
             app.tray = TrayStatus::Starting;
         }
         let open = app.open_window();
-        (app, Task::batch([open, iced::system::theme().map(Message::SystemTheme)]))
+        // `litedb a.sql b.sql` opens the files.
+        let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+        let files = if paths.is_empty() { Task::none() } else { Task::done(Message::OpenPaths(paths)) };
+        (app, Task::batch([open, iced::system::theme().map(Message::SystemTheme), files]))
     }
 
     pub fn title(&self, _window: window::Id) -> String {
@@ -193,6 +213,10 @@ impl App {
             iced::system::theme_changes().map(Message::SystemTheme),
             window::close_requests().map(|_| Message::CloseRequested),
             window::resize_events().map(|(_, size)| Message::Resized(size)),
+            iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::OpenPaths(vec![path])),
+                _ => None,
+            }),
         ];
         if self.settings.minimize_to_tray {
             subs.push(tray::subscription().map(Message::Tray));
@@ -237,6 +261,73 @@ impl App {
         match self.window {
             Some(id) => window::gain_focus(id),
             None => self.open_window(),
+        }
+    }
+
+    /// Quits, unless some tabs have unsaved changes: then asks first.
+    fn request_quit(&mut self) -> Task<Message> {
+        if !self.tabs.iter().any(|t| t.dirty) {
+            return self.quit();
+        }
+        self.confirm = Some(Confirm::Quit);
+        self.show_window()
+    }
+
+    fn close_tab(&mut self, id: u64) -> Task<Message> {
+        let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+            return Task::none();
+        };
+        let mut tab = self.tabs.remove(pos);
+        let close = close_conn(tab.take_connection());
+        if self.active == id && !self.tabs.is_empty() {
+            self.active = self.tabs[pos.min(self.tabs.len() - 1)].id;
+        }
+        close
+    }
+
+    /// Where file dialogs start: the active tab's folder.
+    fn file_dir(&self) -> Option<PathBuf> {
+        let tab = self.tabs.iter().find(|t| t.id == self.active)?;
+        tab.path.as_ref()?.parent().map(PathBuf::from)
+    }
+
+    /// Saves a tab to its file, asking for one if it has none (or `ask`).
+    fn save(&mut self, id: u64, ask: bool, after: AfterSave) -> Task<Message> {
+        let dir = self.file_dir();
+        let Some(tab) = self.tab(id) else {
+            return Task::none();
+        };
+        match (&tab.path, ask) {
+            (Some(path), false) => {
+                let path = path.clone();
+                self.write_tab(id, path, after)
+            }
+            _ => {
+                let name = match &tab.path {
+                    Some(p) => files::display_name(p),
+                    None => format!("{}.sql", tab.title),
+                };
+                Task::perform(files::pick_save(dir, name), move |p| Message::SavePicked(id, p, after))
+            }
+        }
+    }
+
+    fn write_tab(&mut self, id: u64, path: PathBuf, after: AfterSave) -> Task<Message> {
+        let Some(tab) = self.tab(id) else {
+            return Task::none();
+        };
+        if let Err(e) = files::write(&path, &tab.editor.text()) {
+            self.status = Status::Error(e);
+            return Task::none();
+        }
+        tab.title = files::display_name(&path);
+        tab.dirty = false;
+        let saved = format!("Saved {}", path.display());
+        tab.path = Some(path);
+        self.status = Status::Info(saved);
+        match after {
+            AfterSave::Nothing => Task::none(),
+            AfterSave::CloseTab => self.close_tab(id),
         }
     }
 
@@ -303,13 +394,13 @@ impl App {
                 TrayEvent::Toggle if self.window.is_none() => return self.show_window(),
                 TrayEvent::Toggle => return self.hide_window(),
                 TrayEvent::Show => return self.show_window(),
-                TrayEvent::Quit => return self.quit(),
+                TrayEvent::Quit => return self.request_quit(),
             },
             Message::CloseRequested => {
                 if self.settings.minimize_to_tray && self.tray == TrayStatus::Ready {
                     return self.hide_window();
                 }
-                return self.quit();
+                return self.request_quit();
             }
             Message::Resized(size) => self.window_size = size,
             Message::DragStart(drag) => {
@@ -409,16 +500,66 @@ impl App {
 
             Message::SelectTab(id) => self.active = id,
             Message::CloseTab(id) => {
-                let Some(pos) = self.tabs.iter().position(|t| t.id == id) else {
+                if self.tab(id).is_some_and(|t| t.dirty) {
+                    self.active = id;
+                    self.confirm = Some(Confirm::CloseTab(id));
                     return Task::none();
-                };
-                let mut tab = self.tabs.remove(pos);
-                let close = close_conn(tab.take_connection());
-                if self.active == id && !self.tabs.is_empty() {
-                    self.active = self.tabs[pos.min(self.tabs.len() - 1)].id;
                 }
-                return close;
+                return self.close_tab(id);
             }
+            Message::OpenFile => {
+                let dir = self.file_dir();
+                return Task::perform(files::pick_open(dir), Message::OpenPaths);
+            }
+            Message::OpenPaths(paths) => {
+                let mut tasks = Vec::new();
+                for path in paths {
+                    // A file that's already open just gets focus.
+                    if let Some(tab) = self.tabs.iter().find(|t| t.path.as_ref() == Some(&path)) {
+                        self.active = tab.id;
+                        continue;
+                    }
+                    tasks.push(Task::perform(files::read(path.clone()), move |r| Message::FileLoaded(path.clone(), r)));
+                }
+                return Task::batch(tasks);
+            }
+            Message::FileLoaded(path, result) => match result {
+                Ok(text) => {
+                    // Replace the active tab if it's an untouched scratch tab.
+                    let reusable = self.active_tab().filter(|t| {
+                        t.path.is_none() && !t.dirty && t.outcome.is_none() && t.running.is_none() && t.conn.is_none()
+                    });
+                    let id = match reusable {
+                        Some(tab) => {
+                            tab.editor = iced_code::Content::with_text(&text);
+                            tab.id
+                        }
+                        None => self.open_tab(None, &text, None),
+                    };
+                    let tab = self.tab(id).expect("just opened");
+                    tab.title = files::display_name(&path);
+                    tab.path = Some(path);
+                    self.status = Status::Idle;
+                }
+                Err(e) => self.status = Status::Error(e),
+            },
+            Message::Save => return self.save(self.active, false, AfterSave::Nothing),
+            Message::SaveAs => return self.save(self.active, true, AfterSave::Nothing),
+            Message::SavePicked(id, path, after) => {
+                if let Some(path) = path {
+                    return self.write_tab(id, path, after);
+                }
+            }
+            Message::ConfirmSave => match self.confirm.take() {
+                Some(Confirm::CloseTab(id)) => return self.save(id, false, AfterSave::CloseTab),
+                Some(Confirm::Quit) | None => {}
+            },
+            Message::ConfirmDiscard => match self.confirm.take() {
+                Some(Confirm::CloseTab(id)) => return self.close_tab(id),
+                Some(Confirm::Quit) => return self.quit(),
+                None => {}
+            },
+            Message::ConfirmCancel => self.confirm = None,
             Message::Edit(action) => {
                 let while_typing = self.settings.complete_while_typing;
                 let Some(tab) = self.active_tab() else {
@@ -438,6 +579,7 @@ impl App {
                     _ => false,
                 };
                 let keep = matches!(action, Action::Scroll { .. });
+                tab.dirty |= action.is_edit();
                 tab.editor.perform(action);
                 if typing {
                     let forced = tab.completion.as_ref().is_some_and(|c| c.forced);
@@ -467,6 +609,7 @@ impl App {
                     tab.editor.perform(Action::Edit(Edit::Backspace));
                 }
                 tab.editor.perform(Action::Edit(Edit::Paste(Arc::new(item.insert.clone()))));
+                tab.dirty = true;
                 // Clicking the popup took focus away from the editor.
                 return iced::widget::operation::focus(tab.editor_id.clone());
             }
@@ -498,6 +641,9 @@ impl App {
             Message::Run => return self.run_tab(self.active),
             Message::Cancel => {
                 // Esc closes an open dialog first.
+                if self.confirm.take().is_some() {
+                    return Task::none();
+                }
                 if self.settings_open {
                     self.settings_open = false;
                     return Task::none();
@@ -734,7 +880,9 @@ impl App {
 
         // The root is always the same stack, so showing a popup or dialog
         // doesn't rebuild the widget tree (which would drop editor focus).
-        let overlay: Element<'_, Message> = if self.settings_open {
+        let overlay: Element<'_, Message> = if let Some(confirm) = &self.confirm {
+            opaque(center(self.confirm_view(confirm)).style(backdrop))
+        } else if self.settings_open {
             opaque(center(preferences::view(&self.settings, &self.tray)).style(backdrop))
         } else if self.dialog_open {
             let live = self.session.as_ref().map(|s| &s.profile);
@@ -747,8 +895,51 @@ impl App {
         stack![base, overlay].into()
     }
 
+    /// The "save changes?" prompt.
+    fn confirm_view(&self, confirm: &Confirm) -> Element<'_, Message> {
+        let (title, body, save) = match confirm {
+            Confirm::CloseTab(id) => {
+                let name = self.tabs.iter().find(|t| t.id == *id).map_or("this query", |t| t.title.as_str());
+                (
+                    format!("Save changes to {name}?"),
+                    "Your changes will be lost if you don't save them.".to_string(),
+                    true,
+                )
+            }
+            Confirm::Quit => {
+                let n = self.tabs.iter().filter(|t| t.dirty).count();
+                let what = if n == 1 { "1 query has".to_string() } else { format!("{n} queries have") };
+                ("Quit litedb?".to_string(), format!("{what} unsaved changes that will be lost."), false)
+            }
+        };
+        let action = |label: &'static str, msg: Message, style: fn(&Theme, button::Status) -> button::Style| {
+            button(text(label).size(style::BODY)).padding([style::S1 + 2.0, style::S3]).style(style).on_press(msg)
+        };
+        let mut buttons = row![space().width(Length::Fill)].spacing(style::S2);
+        buttons = buttons.push(action("Cancel", Message::ConfirmCancel, style::neutral));
+        if save {
+            buttons = buttons.push(action("Don't Save", Message::ConfirmDiscard, style::neutral));
+            buttons = buttons.push(action("Save", Message::ConfirmSave, style::success));
+        } else {
+            buttons = buttons.push(action("Quit Without Saving", Message::ConfirmDiscard, style::neutral));
+        }
+        let content = column![
+            row![
+                style::icon_colored(icon::warning(), Some(|t: &Theme| t.extended_palette().warning.base.color)),
+                text(title).size(style::TITLE).font(style::UI_BOLD),
+            ]
+            .spacing(style::S2)
+            .align_y(Alignment::Center),
+            style::dim(text(body).size(style::BODY)),
+            buttons,
+        ]
+        .spacing(style::S4)
+        .padding(style::S4 + 4.0);
+        container(content).width(440).style(style::dialog).into()
+    }
+
     fn completion_view(&self) -> Option<Element<'_, Message>> {
-        if self.settings_open || self.dialog_open {
+        if self.settings_open || self.dialog_open || self.confirm.is_some() {
             return None;
         }
         let tab = self.tabs.iter().find(|t| t.id == self.active)?;
@@ -828,9 +1019,12 @@ impl App {
                     .size(12)
                     .into()
             };
-            let label = row![lead, text(tab.title.as_str()).size(style::BODY)]
+            let mut label = row![lead, text(tab.title.as_str()).size(style::BODY)]
                 .spacing(style::S1 + 2.0)
                 .align_y(Alignment::Center);
+            if tab.dirty {
+                label = label.push(style::dim(text("●").size(9)));
+            }
             strip = strip.push(
                 container(
                     row![
@@ -849,10 +1043,16 @@ impl App {
             );
         }
         strip = strip.push(
-            container(style::tip(
-                style::tool_button(icon::add().size(style::ICON), None, Some(Message::NewQuery(None))),
-                "New query (Ctrl+N)",
-            ))
+            container(row![
+                style::tip(
+                    style::tool_button(icon::add().size(style::ICON), None, Some(Message::NewQuery(None))),
+                    "New query (Ctrl+N)",
+                ),
+                style::tip(
+                    style::tool_button(icon::folder_opened().size(style::ICON), None, Some(Message::OpenFile)),
+                    "Open file (Ctrl+O)",
+                ),
+            ])
             .padding([2, 0]),
         );
         container(
@@ -950,6 +1150,10 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
         Key::Named(Named::Enter) if modifiers.command() => Some(Message::Run),
         Key::Named(Named::Escape) => Some(Message::Cancel),
         Key::Character(c) if modifiers.command() && c.as_str() == "n" => Some(Message::NewQuery(None)),
+        Key::Character(c) if modifiers.command() && c.as_str() == "o" => Some(Message::OpenFile),
+        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("s") => {
+            Some(if modifiers.shift() { Message::SaveAs } else { Message::Save })
+        }
         Key::Character(c) if modifiers.command() && c.as_str() == "," => Some(Message::OpenSettings),
         _ => None,
     }
@@ -960,6 +1164,19 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
 fn changes_schema(sql: &str) -> bool {
     sql.split(|c: char| !c.is_alphanumeric() && c != '_')
         .any(|w| ["create", "alter", "drop", "sp_rename"].iter().any(|k| w.eq_ignore_ascii_case(k)))
+}
+
+/// What to do once a save has finished.
+#[derive(Debug, Clone, Copy)]
+pub enum AfterSave {
+    Nothing,
+    CloseTab,
+}
+
+/// A question about unsaved changes.
+enum Confirm {
+    CloseTab(u64),
+    Quit,
 }
 
 fn close_conn(conn: Option<Connection>) -> Task<Message> {

@@ -3,6 +3,7 @@ mod complete;
 mod connect;
 mod db;
 mod explorer;
+mod files;
 mod preferences;
 mod profiles;
 mod query_tab;

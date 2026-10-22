@@ -10,6 +10,7 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Right-click actions**: *Select Top 1000 Rows*, *Script* (view/procedure/function/trigger source), *New Query* in a given database, *Refresh*.
 - **Query tabs**, each with its own connection, so a long query never blocks the tree and a `USE` in one tab doesn't affect another.
 - **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent and comment toggling (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
+- **Open and save `.sql` files** (also by dragging them onto the window, or `litedb file.sql`). Files saved by SSMS in UTF-16 open fine. Unsaved tabs show a dot, and closing or quitting asks before discarding changes.
 - **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
 - **Results grid** with multiple result sets, paging, right-aligned numbers and distinct `NULL`s, plus a Messages tab with row counts, errors and timings.
 - **Cancel** a running query on the server.
@@ -108,6 +109,8 @@ Then connect to `localhost`, port `1433`, user `sa`. [`examples/persons.sql`](ex
 | `F5` / `Ctrl+Enter` | Run script or selection |
 | `Esc` | Cancel running query / close dialog |
 | `Ctrl+N` | New query tab |
+| `Ctrl+O` | Open file |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+,` | Settings |
 | `Ctrl+Space` | Autocomplete (`↑`/`↓` to choose, `Enter`/`Tab` to insert) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |

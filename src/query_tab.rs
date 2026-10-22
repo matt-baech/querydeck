@@ -25,6 +25,10 @@ pub enum ResultsPane {
 pub struct QueryTab {
     pub id: u64,
     pub title: String,
+    /// The file the tab was opened from or saved to.
+    pub path: Option<std::path::PathBuf>,
+    /// Edited since it was opened or last saved.
+    pub dirty: bool,
     pub editor: iced_code::Content,
     pub editor_id: Id,
     /// The open autocomplete popup.
@@ -52,6 +56,8 @@ impl QueryTab {
         Self {
             id,
             title,
+            path: None,
+            dirty: false,
             editor: iced_code::Content::with_text(sql),
             editor_id: Id::unique(),
             completion: None,
@@ -141,8 +147,11 @@ impl QueryTab {
             .into()
         };
         let db_label = if self.current_db.is_empty() { "default database" } else { self.current_db.as_str() };
+        let save =
+            style::tip(style::tool_button(icon::save().size(style::ICON), None, Some(Message::Save)), "Save (Ctrl+S)");
         let toolbar = row![
             run,
+            save,
             vertical_divider(),
             style::icon_colored(icon::database(), Some(style::accent_color)),
             text(db_label).size(style::BODY),
