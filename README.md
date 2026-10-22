@@ -14,7 +14,7 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Cancel** a running query on the server.
 - **Saved connections**, with passwords stored in your OS keyring (KWallet / GNOME Keyring / Windows Credential Manager), never in plain text.
 - **Light and dark themes** (or follow the system), muted colours, resizable panes.
-- **Minimize to tray** on close (Linux desktops with a StatusNotifierItem tray, such as KDE Plasma).
+- **Minimize to tray** on close (Windows, macOS, and Linux desktops with a StatusNotifierItem tray, such as KDE Plasma).
 
 ## Installation
 
@@ -31,7 +31,7 @@ Install Rust 1.88 or newer:
 
 - **Graphics:** a GPU driver with Vulkan, Metal or DirectX 12 support. litedb renders with `wgpu` and falls back to a software renderer if needed.
 - **Linux:** a Wayland or X11 desktop. To remember passwords, a Secret Service provider (KWallet on KDE, GNOME Keyring on GNOME). For minimize-to-tray, a StatusNotifierItem tray (built into KDE Plasma; GNOME needs the *AppIndicator* extension).
-- **Windows / macOS:** should build and run, but haven't been tested. The tray icon is Linux-only for now.
+- **Windows / macOS:** should build and run, but haven't been tested on real machines yet. The tray icon sits in the notification area (Windows) or the menu bar (macOS); left-click shows or hides the window, right-click opens its menu.
 
 ### 3. Build and install
 
@@ -127,9 +127,10 @@ Passwords are never written there. They live in the OS keyring under the service
 - SQL Server: SQL logins only (no Windows Integrated Authentication). Only table triggers are listed.
 - A query keeps at most 100,000 rows per result set.
 - The editor has no line numbers, and grid cells can't be selected or copied yet.
+- macOS: while litedb is in the tray, clicking its Dock icon doesn't bring the window back; use the menu-bar icon.
 
 ## Built with
 
-[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus)
+[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) and [tray-icon](https://github.com/tauri-apps/tray-icon) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus)
 
 Bundled fonts: [Inter](https://rsms.me/inter/) (SIL Open Font License 1.1), [Hack](https://sourcefoundry.org/hack/) (MIT), and [Codicons](https://github.com/microsoft/vscode-codicons) (CC BY 4.0). Their licence texts are in [`assets/fonts`](assets/fonts).
