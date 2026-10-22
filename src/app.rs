@@ -22,9 +22,6 @@ use crate::settings::{Settings, ThemeChoice};
 use crate::style::{self, icon};
 use crate::tray::{self, TrayEvent};
 
-const SAMPLE_SQL: &str = "-- F5 or Ctrl+Enter runs the script (or just the selection).\n\
--- SQL Server scripts can be split into batches with GO.\n\nSELECT 1 AS hello;\n";
-
 #[derive(Debug, Clone)]
 pub enum Message {
     // Appearance
@@ -38,6 +35,10 @@ pub enum Message {
     Tray(TrayEvent),
     CloseRequested,
     Resized(iced::Size),
+    Moved(Point),
+    /// The window's size or position changed; `bool` is whether it's now
+    /// maximized.
+    Geometry(Option<iced::Size>, Option<Point>, bool),
     DragStart(Drag),
     DragMove(Point),
     DragEnd,
@@ -181,10 +182,10 @@ impl App {
             settings_open: false,
             tray: TrayStatus::Off,
             window: None,
-            window_size: iced::Size::new(1280.0, 800.0),
+            window_size: iced::Size::ZERO,
             system_mode: Mode::Dark,
         };
-        app.open_tab(None, SAMPLE_SQL, None);
+        app.open_tab(None, "", None);
         if app.settings.minimize_to_tray {
             app.tray = TrayStatus::Starting;
         }
@@ -224,6 +225,7 @@ impl App {
             window::resize_events().map(|(_, size)| Message::Resized(size)),
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::OpenPaths(vec![path])),
+                iced::Event::Window(window::Event::Moved(position)) => Some(Message::Moved(position)),
                 _ => None,
             }),
         ];
@@ -242,8 +244,16 @@ impl App {
     }
 
     fn open_window(&mut self) -> Task<Message> {
+        let geometry = self.settings.window;
+        self.window_size = iced::Size::new(geometry.width, geometry.height);
+        let position = match (geometry.x, geometry.y) {
+            (Some(x), Some(y)) => window::Position::Specific(Point::new(x, y)),
+            _ => window::Position::default(),
+        };
         let (id, open) = window::open(window::Settings {
             size: self.window_size,
+            position,
+            maximized: geometry.maximized,
             min_size: Some(iced::Size::new(720.0, 480.0)),
             // Wayland compositors ignore this and use the icon of the
             // litedb.desktop entry that matches `application_id`.
@@ -263,8 +273,18 @@ impl App {
     /// Closes the window but keeps running in the tray.
     fn hide_window(&mut self) -> Task<Message> {
         self.drag = None;
+        self.save_settings();
         match self.window.take() {
             Some(id) => window::close(id),
+            None => Task::none(),
+        }
+    }
+
+    /// Asks whether the window is maximized before recording a new size or
+    /// position.
+    fn check_maximized(&self, size: Option<iced::Size>, position: Option<Point>) -> Task<Message> {
+        match self.window {
+            Some(id) => window::is_maximized(id).map(move |maximized| Message::Geometry(size, position, maximized)),
             None => Task::none(),
         }
     }
@@ -427,6 +447,8 @@ impl App {
 
     /// Closes every connection, then exits.
     fn quit(&mut self) -> Task<Message> {
+        // Saves the window geometry.
+        self.save_settings();
         self.end_session().chain(iced::exit())
     }
 
@@ -496,7 +518,25 @@ impl App {
                 }
                 return self.request_quit();
             }
-            Message::Resized(size) => self.window_size = size,
+            Message::Resized(size) => {
+                self.window_size = size;
+                return self.check_maximized(Some(size), None);
+            }
+            Message::Moved(position) => return self.check_maximized(None, Some(position)),
+            Message::Geometry(size, position, maximized) => {
+                // Keep the normal geometry, so un-maximizing after a restart
+                // goes back to it.
+                let geometry = &mut self.settings.window;
+                geometry.maximized = maximized;
+                if !maximized {
+                    if let Some(size) = size {
+                        (geometry.width, geometry.height) = (size.width, size.height);
+                    }
+                    if let Some(p) = position {
+                        (geometry.x, geometry.y) = (Some(p.x), Some(p.y));
+                    }
+                }
+            }
             Message::DragStart(drag) => {
                 let start = match drag {
                     Drag::Sidebar => self.settings.sidebar_width,

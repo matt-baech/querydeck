@@ -59,6 +59,27 @@ pub struct Settings {
     /// Closing the window hides it to the system tray instead of quitting.
     #[serde(default)]
     pub minimize_to_tray: bool,
+    /// Where the window was when litedb last closed.
+    #[serde(default)]
+    pub window: WindowGeometry,
+}
+
+/// The window's normal (not maximized) size and position, and whether it
+/// was maximized. Wayland doesn't tell apps where their window is, so there
+/// the position stays unset and the desktop places the window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub width: f32,
+    pub height: f32,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    pub maximized: bool,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self { width: 1280.0, height: 800.0, x: None, y: None, maximized: false }
+    }
 }
 
 pub const EDITOR_FONT_SIZES: [f32; 8] = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
@@ -74,6 +95,7 @@ impl Default for Settings {
             page_size: default_page_size(),
             complete_while_typing: false,
             minimize_to_tray: false,
+            window: WindowGeometry::default(),
         }
     }
 }

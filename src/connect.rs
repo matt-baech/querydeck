@@ -303,7 +303,7 @@ impl ConnectForm {
         };
         let delete_btn = style::tip(
             style::tool_button(
-                style::icon_colored(icon::trash(), Some(style::danger_color)),
+                style::icon_colored(icon::trash(), Some(style::danger_color)).size(22),
                 None,
                 self.selected.map(|_| Message::Form(FormMsg::Delete)),
             ),
