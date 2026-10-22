@@ -1025,21 +1025,22 @@ impl App {
             if tab.dirty {
                 label = label.push(style::dim(text("●").size(9)));
             }
+            // One button for the whole tab, so it highlights as a unit. The
+            // close button inside it only brightens its icon on hover.
+            let close = button(icon::close().size(12))
+                .style(move |t: &Theme, s| tab_close_button(t, s, active))
+                .padding([2.0, 2.0])
+                .on_press(Message::CloseTab(tab.id));
             strip = strip.push(
-                container(
-                    row![
-                        button(label)
-                            .style(move |t: &Theme, s| tab_button(t, s, active))
-                            .padding([style::S2 - 1.0, style::S3])
-                            .on_press(Message::SelectTab(tab.id)),
-                        button(icon::close().size(12))
-                            .style(move |t: &Theme, s| tab_button(t, s, active))
-                            .padding(iced::Padding { top: 6.0, right: style::S2, bottom: 6.0, left: 0.0 })
-                            .on_press(Message::CloseTab(tab.id)),
-                    ]
-                    .align_y(Alignment::Center),
-                )
-                .style(move |theme: &Theme| style::tab(theme, active)),
+                button(row![label, close].spacing(style::S2).align_y(Alignment::Center))
+                    .style(move |t: &Theme, s| tab_button(t, s, active))
+                    .padding(iced::Padding {
+                        top: style::S2 - 1.0,
+                        right: style::S2,
+                        bottom: style::S2 - 1.0,
+                        left: style::S3,
+                    })
+                    .on_press(Message::SelectTab(tab.id)),
             );
         }
         strip = strip.push(
@@ -1190,14 +1191,34 @@ fn backdrop(_theme: &Theme) -> container::Style {
     container::Style { background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()), ..container::Style::default() }
 }
 
-/// Tab labels are plain text; inactive ones are dimmed until hovered. The
-/// container behind them shows which tab is active.
+/// A whole tab: the active one takes the content area's colour and joins
+/// it; inactive ones are dimmed and get a faint fill on hover.
 fn tab_button(theme: &Theme, status: button::Status, active: bool) -> button::Style {
     let text = theme.extended_palette().background.base.text;
-    let text_color = match status {
-        _ if active => text,
-        button::Status::Hovered | button::Status::Pressed => text,
-        _ => text.scale_alpha(0.55),
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let tab = style::tab(theme, active);
+    let background = if active {
+        tab.background
+    } else if hovered {
+        Some(text.scale_alpha(0.06).into())
+    } else {
+        None
     };
-    button::Style { text_color, ..style::flat(theme, status) }
+    button::Style {
+        background,
+        text_color: if active || hovered { text } else { text.scale_alpha(0.55) },
+        border: tab.border,
+        ..button::Style::default()
+    }
+}
+
+/// The × in a tab: no background of its own, just a brighter icon on hover.
+fn tab_close_button(theme: &Theme, status: button::Status, active: bool) -> button::Style {
+    let text = theme.extended_palette().background.base.text;
+    let text_color = match status {
+        button::Status::Hovered | button::Status::Pressed => text,
+        _ if active => text.scale_alpha(0.6),
+        _ => text.scale_alpha(0.35),
+    };
+    button::Style { background: None, text_color, ..button::Style::default() }
 }
