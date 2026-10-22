@@ -77,15 +77,26 @@ impl fmt::Display for ColumnInfo {
     }
 }
 
-pub async fn databases(conn: Connection) -> Result<Vec<String>, String> {
+/// The databases the user can access, with whether each is a built-in
+/// system database (master, model, msdb, tempdb).
+pub async fn databases(conn: Connection) -> Result<Vec<(String, bool)>, String> {
     let sql = match conn.driver() {
         Driver::SqlServer => {
-            "SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name"
+            "SELECT name, CASE WHEN database_id <= 4 THEN 1 ELSE 0 END FROM sys.databases \
+             WHERE HAS_DBACCESS(name) = 1 ORDER BY name"
         }
         // A Postgres connection can only see objects in its own database.
-        Driver::Postgres => "SELECT current_database()",
+        Driver::Postgres => "SELECT current_database(), 0",
     };
-    Ok(conn.query_rows(sql).await?.into_iter().filter_map(|r| r.into_iter().next()).collect())
+    Ok(conn
+        .query_rows(sql)
+        .await?
+        .into_iter()
+        .filter_map(|r| {
+            let [name, system]: [String; 2] = r.try_into().ok()?;
+            Some((name, is_true(&system)))
+        })
+        .collect())
 }
 
 pub async fn objects(conn: Connection, database: String) -> Result<Vec<DbObject>, String> {

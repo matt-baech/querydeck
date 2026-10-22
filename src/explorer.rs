@@ -21,6 +21,8 @@ pub enum Load<T> {
 pub enum NodeKey {
     Server,
     Databases,
+    /// The folder holding master, model, msdb and tempdb.
+    SystemDatabases,
     Database(String),
     Folder(String, ObjectKind),
     /// Database name and object id.
@@ -30,7 +32,7 @@ pub enum NodeKey {
 #[derive(Debug, Clone)]
 pub enum ExplorerMsg {
     Toggle(NodeKey),
-    DatabasesLoaded(Result<Vec<String>, String>),
+    DatabasesLoaded(Result<Vec<(String, bool)>, String>),
     ObjectsLoaded(String, Result<Vec<DbObject>, String>),
     ColumnsLoaded(String, String, Result<Vec<ColumnInfo>, String>),
 }
@@ -45,6 +47,8 @@ pub enum Request {
 pub struct Explorer {
     server_label: String,
     databases: Load<Vec<String>>,
+    /// Which of `databases` are system databases.
+    system: HashSet<String>,
     objects: HashMap<String, Load<Vec<DbObject>>>,
     columns: HashMap<(String, String), Load<Vec<ColumnInfo>>>,
     expanded: HashSet<NodeKey>,
@@ -59,6 +63,7 @@ impl Explorer {
         Self {
             server_label,
             databases: Load::Loading,
+            system: HashSet::new(),
             objects: HashMap::new(),
             columns: HashMap::new(),
             expanded: [NodeKey::Server, NodeKey::Databases].into_iter().collect(),
@@ -118,6 +123,10 @@ impl Explorer {
                 }
             }
             ExplorerMsg::DatabasesLoaded(r) => {
+                let r = r.map(|dbs| {
+                    self.system = dbs.iter().filter(|(_, system)| *system).map(|(name, _)| name.clone()).collect();
+                    dbs.into_iter().map(|(name, _)| name).collect()
+                });
                 self.databases = to_load(r);
                 None
             }
@@ -171,33 +180,56 @@ impl Explorer {
             Load::Loaded(dbs) => dbs,
             other => return push_status(tree, 2, other).into(),
         };
-        for db in dbs {
-            let db_key = NodeKey::Database(db.clone());
-            let db_menu =
-                vec![("New Query", Message::NewQuery(Some(db.clone()))), ("Refresh", Message::RefreshExplorer)];
-            tree =
-                tree.push(self.node(2, db_key.clone(), db, icon::database(), Some(style::accent_color), true, db_menu));
-            if !self.is_open(&db_key) {
-                continue;
-            }
-            let objects = match self.objects.get(db) {
-                Some(Load::Loaded(objs)) => objs,
-                Some(other) => {
-                    tree = push_status(tree, 3, other);
-                    continue;
+        // Your own databases first; the built-in ones in a folder at the
+        // bottom, like SSMS, since they're rarely what you're after.
+        for db in dbs.iter().filter(|db| !self.system.contains(*db)) {
+            tree = self.database(tree, 2, db);
+        }
+        if !self.system.is_empty() {
+            let open = self.is_open(&NodeKey::SystemDatabases);
+            tree = tree.push(self.node(
+                2,
+                NodeKey::SystemDatabases,
+                "System Databases",
+                if open { icon::folder_opened() } else { icon::folder() },
+                None,
+                true,
+                vec![("Refresh", Message::RefreshExplorer)],
+            ));
+            if open {
+                for db in dbs.iter().filter(|db| self.system.contains(*db)) {
+                    tree = self.database(tree, 3, db);
                 }
-                None => continue,
-            };
-            for kind in ObjectKind::ALL {
-                tree = self.folder(tree, db, kind, objects);
             }
         }
         tree.into()
     }
 
+    /// A database node at `level`, with its object folders when expanded.
+    fn database<'a>(&'a self, mut tree: Column<'a, Message>, level: u16, db: &'a str) -> Column<'a, Message> {
+        let db_key = NodeKey::Database(db.to_string());
+        let db_menu =
+            vec![("New Query", Message::NewQuery(Some(db.to_string()))), ("Refresh", Message::RefreshExplorer)];
+        tree =
+            tree.push(self.node(level, db_key.clone(), db, icon::database(), Some(style::accent_color), true, db_menu));
+        if !self.is_open(&db_key) {
+            return tree;
+        }
+        let objects = match self.objects.get(db) {
+            Some(Load::Loaded(objs)) => objs,
+            Some(other) => return push_status(tree, level + 1, other),
+            None => return tree,
+        };
+        for kind in ObjectKind::ALL {
+            tree = self.folder(tree, level + 1, db, kind, objects);
+        }
+        tree
+    }
+
     fn folder<'a>(
         &'a self,
         mut tree: Column<'a, Message>,
+        level: u16,
         db: &'a str,
         kind: ObjectKind,
         objects: &'a [DbObject],
@@ -208,7 +240,7 @@ impl Explorer {
         let label = format!("{}  {count}", kind.folder_name());
         let glyph = if open { icon::folder_opened() } else { icon::folder() };
         tree = tree.push(self.node(
-            3,
+            level,
             key.clone(),
             &label,
             glyph,
@@ -234,16 +266,24 @@ impl Explorer {
             }
             menu.push(("New Query", Message::NewQuery(Some(db.to_string()))));
             let (glyph, color) = object_icon(kind);
-            tree = tree.push(self.node(4, obj_key.clone(), &label, glyph, Some(color), kind.is_selectable(), menu));
+            tree = tree.push(self.node(
+                level + 1,
+                obj_key.clone(),
+                &label,
+                glyph,
+                Some(color),
+                kind.is_selectable(),
+                menu,
+            ));
 
             if kind.is_selectable() && self.is_open(&obj_key) {
                 match self.columns.get(&(db.to_string(), obj.id.clone())) {
                     Some(Load::Loaded(cols)) => {
                         for c in cols {
-                            tree = tree.push(column_leaf(5, c));
+                            tree = tree.push(column_leaf(level + 2, c));
                         }
                     }
-                    Some(other) => tree = push_status(tree, 5, other),
+                    Some(other) => tree = push_status(tree, level + 2, other),
                     None => {}
                 }
             }
