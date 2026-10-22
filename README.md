@@ -57,24 +57,17 @@ To build without installing, run `cargo build --release`. The binary is then at 
 ### Optional: add it to your application menu (Linux)
 
 ```bash
-cat > ~/.local/share/applications/litedb.desktop <<'EOF'
-[Desktop Entry]
-Name=litedb
-Comment=Lightweight SQL client
-Exec=litedb
-Icon=server-database
-Terminal=false
-Type=Application
-Categories=Development;Database;
-StartupWMClass=litedb
-EOF
+cp assets/litedb.desktop ~/.local/share/applications/
 ```
+
+This also gives the window its icon on Wayland, where the desktop picks the icon from this entry rather than from the app. It uses the `server-database` icon from your icon theme, the same one the tray shows.
 
 ### Uninstall
 
 ```bash
 cargo uninstall litedb
 rm -rf ~/.config/litedb
+rm -f ~/.local/share/applications/litedb.desktop
 ```
 
 ## Usage

@@ -245,6 +245,9 @@ impl App {
         let (id, open) = window::open(window::Settings {
             size: self.window_size,
             min_size: Some(iced::Size::new(720.0, 480.0)),
+            // Wayland compositors ignore this and use the icon of the
+            // litedb.desktop entry that matches `application_id`.
+            icon: window::icon::from_rgba(tray::icon::window(64), 64, 64).ok(),
             // Closing is decided in `CloseRequested` (quit or go to the tray).
             exit_on_close_request: false,
             platform_specific: window::settings::PlatformSpecific {

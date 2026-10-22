@@ -326,30 +326,40 @@ mod imp {
 
 /// The tray glyph: a database cylinder drawn at runtime, so there's no image
 /// asset or decoder to ship.
-#[cfg(any(windows, target_os = "macos", test))]
-mod icon {
-    const SIZE: u32 = 32;
-
-    /// RGBA pixels and edge length. `template` gives a black glyph for
-    /// macOS's template images; otherwise it's a muted blue.
+/// Also the window icon, where the platform takes one from the app.
+pub mod icon {
+    /// RGBA pixels and edge length at the tray's size. `template` gives a black
+    /// glyph for macOS's template images; otherwise it's a muted blue.
+    #[cfg(any(windows, target_os = "macos", test))]
     pub fn database(template: bool) -> (Vec<u8>, u32) {
+        (pixels(32, template), 32)
+    }
+
+    /// The glyph at `size`×`size`, for the window icon.
+    pub fn window(size: u32) -> Vec<u8> {
+        pixels(size, false)
+    }
+
+    fn pixels(size: u32, template: bool) -> Vec<u8> {
         let (r, g, b) = if template { (0, 0, 0) } else { (0x4a, 0x7f, 0xb5) };
-        let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-        for y in 0..SIZE {
-            for x in 0..SIZE {
+        // The shape is laid out on a 32-unit grid.
+        let scale = 32.0 / size as f32;
+        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+        for y in 0..size {
+            for x in 0..size {
                 // 4x4 supersampling for smooth edges.
                 let mut hits = 0;
                 for sy in 0..4 {
                     for sx in 0..4 {
                         let px = x as f32 + (sx as f32 + 0.5) / 4.0;
                         let py = y as f32 + (sy as f32 + 0.5) / 4.0;
-                        hits += covered(px, py) as u32;
+                        hits += covered(px * scale, py * scale) as u32;
                     }
                 }
                 rgba.extend_from_slice(&[r, g, b, (hits * 255 / 16) as u8]);
             }
         }
-        (rgba, SIZE)
+        rgba
     }
 
     fn covered(x: f32, y: f32) -> bool {

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=litedb
+GenericName=SQL Client
+Comment=Query SQL Server and PostgreSQL databases
+Exec=litedb %F
+Icon=server-database
+Terminal=false
+Categories=Development;Database;
+MimeType=application/sql;text/x-sql;
+StartupWMClass=litedb
