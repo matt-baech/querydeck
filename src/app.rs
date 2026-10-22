@@ -1089,6 +1089,11 @@ impl App {
         };
         self.status = Status::Info(format!("Connected. {}", c.server_version));
         let database = c.database.clone();
+        // Tabs without a database of their own open their connection in the
+        // profile's default, which is the one just connected to.
+        for tab in self.tabs.iter_mut().filter(|t| t.database.is_none()) {
+            tab.current_db = database.clone();
+        }
         self.session = Some(Session { profile, password: self.form.password.clone(), explorer_conn: c.conn });
         self.explorer = Some(Explorer::new(label));
         self.dialog_open = false;
