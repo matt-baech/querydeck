@@ -73,6 +73,11 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
                     .width(90)
                     .into(),
             ),
+            checkbox(settings.complete_while_typing)
+                .label("Suggest while typing (otherwise press Ctrl+Space)")
+                .on_toggle(Message::SetCompleteWhileTyping)
+                .size(14)
+                .text_size(style::BODY),
         ]
         .spacing(style::S4),
     );
@@ -109,7 +114,7 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
         .spacing(style::S4 + 4.0)
         .padding(style::S4 + 4.0);
 
-    container(body).width(560).height(520).style(style::dialog).into()
+    container(body).width(560).height(560).style(style::dialog).into()
 }
 
 fn section<'a>(title: &'a str, content: Column<'a, Message>) -> Element<'a, Message> {

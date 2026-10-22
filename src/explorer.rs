@@ -132,6 +132,14 @@ impl Explorer {
         }
     }
 
+    /// The server's databases, once loaded.
+    pub fn databases(&self) -> &[String] {
+        match &self.databases {
+            Load::Loaded(dbs) => dbs,
+            _ => &[],
+        }
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let mut tree = column![].spacing(1);
 
@@ -291,7 +299,7 @@ fn object_icon<'a>(kind: ObjectKind) -> (Text<'a>, fn(&Theme) -> Color) {
     }
 }
 
-fn purple(t: &Theme) -> Color {
+pub fn purple(t: &Theme) -> Color {
     if t.extended_palette().is_dark { color!(0xa48cb8) } else { color!(0x7a5f91) }
 }
 

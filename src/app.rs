@@ -1,16 +1,20 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
+use iced::widget::text_editor::{Action, Edit};
 use iced::widget::{button, center, column, container, opaque, row, scrollable, space, stack, text};
-use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
+use iced::{Alignment, Color, Element, Length, Point, Rectangle, Subscription, Task, Theme, mouse, window};
+
+use crate::complete::{self, Sources};
 
 use crate::connect::{ConnectForm, FormMsg};
-use crate::db::catalog::{self, DbObject};
+use crate::db::catalog::{self, DbObject, SchemaInfo};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
-use crate::explorer::{Explorer, ExplorerMsg, Request};
+use crate::explorer::{Explorer, ExplorerMsg, Load, Request};
 use crate::preferences::{self, TrayStatus};
-use crate::query_tab::{QueryTab, ResultsPane, horizontal_divider, splitter};
+use crate::query_tab::{QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
 use crate::style::{self, icon};
 use crate::tray::{self, TrayEvent};
@@ -27,6 +31,7 @@ pub enum Message {
     SetEditorFontSize(f32),
     SetPageSize(usize),
     SetMinimizeToTray(bool),
+    SetCompleteWhileTyping(bool),
     Tray(TrayEvent),
     CloseRequested,
     Resized(iced::Size),
@@ -64,6 +69,15 @@ pub enum Message {
     ShowPane(ResultsPane),
     SelectResult(usize),
     Page(usize),
+
+    // Autocomplete
+    CaretMoved(Rectangle),
+    TriggerCompletion,
+    CompletionMove(isize),
+    /// Insert the given suggestion, or the selected one.
+    AcceptCompletion(Option<usize>),
+    CloseCompletion,
+    SchemaLoaded(String, Result<Arc<SchemaInfo>, String>),
 }
 
 /// A live connection to a server: what we connected with, plus the
@@ -84,6 +98,10 @@ pub struct App {
     tabs: Vec<QueryTab>,
     active: u64,
     next_tab_id: u64,
+    /// Autocomplete metadata per database, loaded on first use.
+    schemas: HashMap<String, Load<Arc<SchemaInfo>>>,
+    /// Where the editor's caret is in the window.
+    caret: Option<Rectangle>,
 
     status: Status,
     settings: Settings,
@@ -133,6 +151,8 @@ impl App {
             tabs: Vec::new(),
             active: 0,
             next_tab_id: 1,
+            schemas: HashMap::new(),
+            caret: None,
             status: Status::Idle,
             settings: Settings::load(),
             drag: None,
@@ -272,6 +292,10 @@ impl App {
                 }
                 self.save_settings();
             }
+            Message::SetCompleteWhileTyping(on) => {
+                self.settings.complete_while_typing = on;
+                self.save_settings();
+            }
             Message::SetMinimizeToTray(on) => {
                 self.settings.minimize_to_tray = on;
                 self.tray = if on { TrayStatus::Starting } else { TrayStatus::Off };
@@ -351,6 +375,7 @@ impl App {
                 }
             }
             Message::RefreshExplorer => {
+                self.schemas.clear();
                 if let Some(explorer) = &mut self.explorer {
                     let requests = explorer.refresh();
                     return Task::batch(requests.into_iter().map(|r| self.fetch(r)));
@@ -399,8 +424,78 @@ impl App {
                 return close;
             }
             Message::Edit(action) => {
+                let while_typing = self.settings.complete_while_typing;
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                // Typing a name (or a dot) updates open suggestions, or opens
+                // them if "suggest while typing" is on. Anything else that
+                // moves the cursor or edits text closes them.
+                let open = tab.completion.is_some() || while_typing;
+                let typing = match &action {
+                    Action::Edit(Edit::Insert(c)) => {
+                        open && (complete::is_word_char(*c) || matches!(c, '.' | '[' | '"'))
+                    }
+                    Action::Edit(Edit::Backspace | Edit::Delete) => tab.completion.is_some(),
+                    _ => false,
+                };
+                let keep = matches!(action, Action::Scroll { .. });
+                tab.editor.perform(action);
+                if typing {
+                    let forced = tab.completion.as_ref().is_some_and(|c| c.forced);
+                    return self.refresh_completion(forced);
+                }
+                if !keep {
+                    tab.completion = None;
+                }
+            }
+            Message::CaretMoved(rect) => self.caret = Some(rect),
+            Message::TriggerCompletion => return self.refresh_completion(true),
+            Message::CompletionMove(step) => {
+                if let Some(c) = self.active_tab().and_then(|t| t.completion.as_mut()) {
+                    c.select_next(step);
+                }
+            }
+            Message::AcceptCompletion(index) => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                let Some(c) = tab.completion.take() else {
+                    return Task::none();
+                };
+                let Some(item) = c.items.get(index.unwrap_or(c.selected)) else {
+                    return Task::none();
+                };
+                for _ in 0..c.replace {
+                    tab.editor.perform(Action::Edit(Edit::Backspace));
+                }
+                tab.editor.perform(Action::Edit(Edit::Paste(Arc::new(item.insert.clone()))));
+                // Clicking the popup took focus away from the editor.
+                return iced::widget::operation::focus(tab.editor_id.clone());
+            }
+            Message::CloseCompletion => {
                 if let Some(tab) = self.active_tab() {
-                    tab.editor.perform(action);
+                    tab.completion = None;
+                }
+            }
+            Message::SchemaLoaded(database, result) => {
+                let failed = result.as_ref().err().cloned();
+                self.schemas.insert(
+                    database,
+                    match result {
+                        Ok(info) => Load::Loaded(info),
+                        Err(e) => Load::Failed(e),
+                    },
+                );
+                if let Some(e) = failed {
+                    self.status = Status::Error(format!("Autocomplete could not load the schema: {e}"));
+                }
+                // Show the suggestions that were waiting for it.
+                if let Some(tab) = self.active_tab()
+                    && std::mem::take(&mut tab.completion_pending)
+                {
+                    let forced = tab.completion.as_ref().is_some_and(|c| c.forced);
+                    return self.refresh_completion(forced);
                 }
             }
             Message::Run => return self.run_tab(self.active),
@@ -438,9 +533,9 @@ impl App {
                 match result {
                     Ok(c) if still_waiting && self.session.is_some() => {
                         let tab = self.tab(id).expect("checked above");
-                        tab.current_db = c.database;
+                        tab.current_db = c.database.clone();
                         tab.conn = Some(c.conn);
-                        return self.execute(id, sql);
+                        return Task::batch([self.execute(id, sql), self.load_schema(c.database)]);
                     }
                     // The tab was closed or cancelled while connecting.
                     Ok(c) => return close_conn(Some(c.conn)),
@@ -459,9 +554,17 @@ impl App {
                 } else {
                     Status::Info(format!("Query completed in {secs:.3}s."))
                 };
-                if let Some(tab) = self.tab(id) {
-                    tab.finish(outcome);
+                let Some(tab) = self.tab(id) else {
+                    return Task::none();
+                };
+                let changed_schema = tab.ran_ddl && !outcome.failed;
+                tab.finish(outcome);
+                // `USE` may have switched databases, and DDL makes the cached schema stale.
+                let database = tab.current_db.clone();
+                if changed_schema {
+                    self.schemas.remove(&database);
                 }
+                return self.load_schema(database);
             }
             Message::ShowPane(p) => {
                 if let Some(tab) = self.active_tab() {
@@ -489,11 +592,12 @@ impl App {
         let profile = self.form.form.clone();
         let label = format!("{} ({})", profile.host, profile.driver);
         self.status = Status::Info(format!("Connected. {}", c.server_version));
+        let database = c.database.clone();
         self.session = Some(Session { profile, password: self.form.password.clone(), explorer_conn: c.conn });
         self.explorer = Some(Explorer::new(label));
         self.dialog_open = false;
         self.sidebar_open = true;
-        close.chain(self.fetch(Request::Databases))
+        close.chain(Task::batch([self.fetch(Request::Databases), self.load_schema(database)]))
     }
 
     /// Closes the explorer's and every tab's connection.
@@ -503,6 +607,10 @@ impl App {
             conns.push(s.explorer_conn);
         }
         self.explorer = None;
+        self.schemas.clear();
+        for tab in &mut self.tabs {
+            tab.completion = None;
+        }
         Task::batch(conns.into_iter().map(|c| close_conn(Some(c))))
     }
 
@@ -527,6 +635,51 @@ impl App {
         }
     }
 
+    /// Loads a database's autocomplete metadata unless it is cached or loading.
+    fn load_schema(&mut self, database: String) -> Task<Message> {
+        let Some(session) = &self.session else {
+            return Task::none();
+        };
+        if database.is_empty() || self.schemas.contains_key(&database) {
+            return Task::none();
+        }
+        let conn = session.explorer_conn.clone();
+        self.schemas.insert(database.clone(), Load::Loading);
+        Task::perform(catalog::schema_info(conn, database.clone()), move |r| {
+            Message::SchemaLoaded(database.clone(), r.map(Arc::new))
+        })
+    }
+
+    /// Recomputes the active tab's suggestions for the text at its cursor.
+    fn refresh_completion(&mut self, forced: bool) -> Task<Message> {
+        let Some(session) = &self.session else {
+            return Task::none();
+        };
+        let driver = session.profile.driver;
+        let default_db = session.profile.database.clone();
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == self.active) else {
+            return Task::none();
+        };
+        let database = [&tab.current_db, tab.database.as_ref().unwrap_or(&default_db)]
+            .into_iter()
+            .find(|d| !d.is_empty())
+            .cloned()
+            .unwrap_or_default();
+        let schema = match self.schemas.get(&database) {
+            Some(Load::Loaded(info)) => Some(info.clone()),
+            _ => None,
+        };
+        let databases = self.explorer.as_ref().map(|e| e.databases()).unwrap_or_default();
+        let sources = Sources { driver, schema: schema.as_deref(), databases };
+        let (text, cursor) = tab.text_and_cursor();
+        tab.completion = complete::complete(&text, cursor, &sources, forced);
+        if schema.is_some() {
+            return Task::none();
+        }
+        tab.completion_pending = true;
+        self.load_schema(database)
+    }
+
     /// Runs the tab's script, opening the tab's connection first if needed.
     fn run_tab(&mut self, id: u64) -> Task<Message> {
         let Some(session) = &self.session else {
@@ -544,6 +697,8 @@ impl App {
         let Some(sql) = tab.sql_to_run() else {
             return Task::none();
         };
+        tab.completion = None;
+        tab.ran_ddl = changes_schema(&sql);
 
         if tab.conn.is_some() {
             return self.execute(id, sql);
@@ -580,14 +735,28 @@ impl App {
         let body = if self.sidebar_open { row![self.sidebar(), splitter(Drag::Sidebar), main] } else { row![main] };
         let base = column![body.height(Length::Fill), horizontal_divider(), self.status_bar()];
 
-        if self.settings_open {
-            stack![base, opaque(center(preferences::view(&self.settings, &self.tray)).style(backdrop))].into()
+        // The root is always the same stack, so showing a popup or dialog
+        // doesn't rebuild the widget tree (which would drop editor focus).
+        let overlay: Element<'_, Message> = if self.settings_open {
+            opaque(center(preferences::view(&self.settings, &self.tray)).style(backdrop))
         } else if self.dialog_open {
             let live = self.session.as_ref().map(|s| &s.profile);
-            stack![base, opaque(center(self.form.view(live)).style(backdrop))].into()
+            opaque(center(self.form.view(live)).style(backdrop))
+        } else if let Some(popup) = self.completion_view() {
+            popup
         } else {
-            base.into()
+            space().into()
+        };
+        stack![base, overlay].into()
+    }
+
+    fn completion_view(&self) -> Option<Element<'_, Message>> {
+        if self.settings_open || self.dialog_open {
+            return None;
         }
+        let tab = self.tabs.iter().find(|t| t.id == self.active)?;
+        let c = tab.completion.as_ref()?;
+        Some(completion_popup(c, self.caret?, self.window_size, self.settings.editor_font_size))
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
@@ -701,7 +870,9 @@ impl App {
 
     fn active_tab_view(&self) -> Element<'_, Message> {
         match self.tabs.iter().find(|t| t.id == self.active) {
-            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings),
+            Some(tab) => {
+                tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings, self.caret)
+            }
             None => container(
                 column![
                     style::dim(icon::file_code().size(32)),
@@ -787,6 +958,13 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
         Key::Character(c) if modifiers.command() && c.as_str() == "," => Some(Message::OpenSettings),
         _ => None,
     }
+}
+
+/// Whether a script may create, change or drop objects, so cached
+/// autocomplete metadata should be reloaded after it runs.
+fn changes_schema(sql: &str) -> bool {
+    sql.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|w| ["create", "alter", "drop", "sp_rename"].iter().any(|k| w.eq_ignore_ascii_case(k)))
 }
 
 fn close_conn(conn: Option<Connection>) -> Task<Message> {

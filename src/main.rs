@@ -1,4 +1,6 @@
 mod app;
+mod caret;
+mod complete;
 mod connect;
 mod db;
 mod explorer;

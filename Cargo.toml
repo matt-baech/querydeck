@@ -9,7 +9,7 @@ description = "Lightweight desktop SQL client for SQL Server and PostgreSQL"
 chrono = "0.4.45"
 directories = "6.0.0"
 futures-util = "0.3.34"
-iced = { version = "0.14.0", features = ["tokio", "highlighter", "linux-theme-detection"] }
+iced = { version = "0.14.0", features = ["tokio", "highlighter", "linux-theme-detection", "advanced"] }
 iced_aw = { version = "0.14", default-features = false, features = ["context_menu"] }
 iced_fonts = { version = "0.3", features = ["codicon"] }
 keyring = "4.2.0"

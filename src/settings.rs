@@ -53,6 +53,9 @@ pub struct Settings {
     pub editor_font_size: f32,
     #[serde(default = "default_page_size")]
     pub page_size: usize,
+    /// Show autocomplete suggestions as you type, not only on Ctrl+Space.
+    #[serde(default)]
+    pub complete_while_typing: bool,
     /// Closing the window hides it to the system tray instead of quitting.
     #[serde(default)]
     pub minimize_to_tray: bool,
@@ -69,6 +72,7 @@ impl Default for Settings {
             editor_height: default_editor_height(),
             editor_font_size: default_editor_font_size(),
             page_size: default_page_size(),
+            complete_while_typing: false,
             minimize_to_tray: false,
         }
     }

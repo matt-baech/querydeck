@@ -176,6 +176,69 @@ pub async fn columns(conn: Connection, database: String, object: DbObject) -> Re
         .collect())
 }
 
+/// Everything autocomplete needs to know about one database.
+#[derive(Debug, Clone, Default)]
+pub struct SchemaInfo {
+    /// Tables, views, procedures and functions (no triggers).
+    pub objects: Vec<SchemaObject>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SchemaObject {
+    pub kind: ObjectKind,
+    pub schema: String,
+    pub name: String,
+    /// Name and data type, for tables and views.
+    pub columns: Vec<(String, String)>,
+}
+
+/// Loads every object and every table/view column of a database in two queries.
+pub async fn schema_info(conn: Connection, database: String) -> Result<SchemaInfo, String> {
+    let driver = conn.driver();
+    let objs = objects(conn.clone(), database.clone()).await?;
+    let sql = match driver {
+        Driver::SqlServer => format!(
+            "SELECT s.name, o.name, c.name, t.name \
+             FROM {db}.sys.columns c \
+             JOIN {db}.sys.objects o ON o.object_id = c.object_id \
+             JOIN {db}.sys.schemas s ON s.schema_id = o.schema_id \
+             JOIN {db}.sys.types t ON t.user_type_id = c.user_type_id \
+             WHERE o.is_ms_shipped = 0 AND o.type IN ('U','V') \
+             ORDER BY s.name, o.name, c.column_id",
+            db = mssql_ident(&database),
+        ),
+        Driver::Postgres => "\
+            SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod) \
+            FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+            WHERE c.relkind IN ('r','p','v','m','f') AND a.attnum > 0 AND NOT a.attisdropped \
+              AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' \
+            ORDER BY 1, 2, a.attnum"
+            .to_string(),
+    };
+    let mut columns: std::collections::HashMap<(String, String), Vec<(String, String)>> = Default::default();
+    for row in conn.query_rows(&sql).await? {
+        if let Ok([schema, table, column, data_type]) = <[String; 4]>::try_from(row) {
+            columns.entry((schema, table)).or_default().push((column, data_type));
+        }
+    }
+    let objects = objs
+        .into_iter()
+        .filter(|o| o.kind != ObjectKind::Trigger)
+        .map(|o| {
+            // Postgres routines are listed with their argument types: "name(int, text)".
+            let name = match (driver, o.kind) {
+                (Driver::Postgres, ObjectKind::Procedure | ObjectKind::Function) => {
+                    o.name.split('(').next().unwrap_or_default().to_string()
+                }
+                _ => o.name,
+            };
+            let columns = columns.remove(&(o.schema.clone(), name.clone())).unwrap_or_default();
+            SchemaObject { kind: o.kind, schema: o.schema, name, columns }
+        })
+        .collect();
+    Ok(SchemaInfo { objects })
+}
+
 /// The CREATE script of a view, procedure, function or trigger.
 pub async fn definition(conn: Connection, database: String, object: DbObject) -> Result<String, String> {
     let id = numeric_id(&object.id)?;

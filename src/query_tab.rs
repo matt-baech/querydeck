@@ -2,13 +2,17 @@
 
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, mouse_area, row, scrollable, space, table, text, text_editor};
-use iced::{Alignment, Element, Font, Length, mouse, task};
+use iced::keyboard::{Key, key::Named};
+use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text, text_editor};
+use iced::{Alignment, Element, Font, Length, Rectangle, Size, mouse, task};
 
 use crate::app::{Drag, Message, shortcut};
+use crate::caret::caret;
+use crate::complete::{Completion, Kind};
 use crate::db::{self, Connection, QueryOutcome};
 use crate::settings::Settings;
 use crate::style::{self, icon};
+use text_editor::Binding;
 
 /// Long cell values are cut to this many characters in the grid.
 const MAX_CELL_CHARS: usize = 120;
@@ -23,6 +27,13 @@ pub struct QueryTab {
     pub id: u64,
     pub title: String,
     pub editor: text_editor::Content,
+    pub editor_id: Id,
+    /// The open autocomplete popup.
+    pub completion: Option<Completion>,
+    /// Autocomplete is waiting for the database's metadata to load.
+    pub completion_pending: bool,
+    /// The last script run may have changed the schema (CREATE, ALTER, DROP).
+    pub ran_ddl: bool,
     /// Database the tab's connection opens in (None: the profile's default).
     pub database: Option<String>,
     /// Opened on the first run, so each tab has its own session like in SSMS.
@@ -43,6 +54,10 @@ impl QueryTab {
             id,
             title,
             editor: text_editor::Content::with_text(sql),
+            editor_id: Id::unique(),
+            completion: None,
+            completion_pending: false,
+            ran_ddl: false,
             current_db: database.clone().unwrap_or_default(),
             database,
             conn: None,
@@ -58,6 +73,24 @@ impl QueryTab {
     pub fn sql_to_run(&self) -> Option<String> {
         let sql = self.editor.selection().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| self.editor.text());
         (!sql.trim().is_empty()).then_some(sql)
+    }
+
+    /// The editor's text and the cursor's byte offset into it.
+    pub fn text_and_cursor(&self) -> (String, usize) {
+        let position = self.editor.cursor().position;
+        let mut text = String::new();
+        let mut cursor = 0;
+        let mut lines = self.editor.lines().enumerate().peekable();
+        while let Some((i, line)) = lines.next() {
+            if i == position.line {
+                cursor = text.len() + position.column.min(line.text.len());
+            }
+            text.push_str(&line.text);
+            if lines.peek().is_some() {
+                text.push_str(if line.ending == text_editor::LineEnding::None { "\n" } else { line.ending.as_str() });
+            }
+        }
+        (text, cursor)
     }
 
     pub fn finish(&mut self, outcome: Arc<QueryOutcome>) {
@@ -86,6 +119,7 @@ impl QueryTab {
         connected: bool,
         highlighter: iced::highlighter::Theme,
         settings: &Settings,
+        known_caret: Option<Rectangle>,
     ) -> Element<'a, Message> {
         let run: Element<'_, Message> = if self.running.is_some() {
             style::tip(
@@ -119,7 +153,10 @@ impl QueryTab {
         .padding([style::S1, style::S2])
         .align_y(Alignment::Center);
 
+        let popup = self.completion.is_some();
+        let has_selection = self.editor.cursor().selection.is_some();
         let editor = text_editor(&self.editor)
+            .id(self.editor_id.clone())
             .on_action(Message::Edit)
             .highlight("sql", highlighter)
             .font(style::MONO_FONT)
@@ -127,13 +164,20 @@ impl QueryTab {
             .style(style::editor)
             .height(settings.editor_height)
             .padding([style::S2, style::S3])
-            .key_binding(|press| {
+            .key_binding(move |press| {
+                if let Some(m) = completion_key(&press.key, press.modifiers, popup) {
+                    return Some(text_editor::Binding::Custom(m));
+                }
                 if let Some(m) = shortcut(&press.key, press.modifiers) {
                     return Some(text_editor::Binding::Custom(m));
+                }
+                if let Some(b) = delete_word(&press.key, press.modifiers, has_selection) {
+                    return Some(b);
                 }
                 text_editor::Binding::from_key_press(press)
             });
 
+        let editor = caret(editor, known_caret, Message::CaretMoved);
         column![toolbar, horizontal_divider(), editor, splitter(Drag::Editor), self.results_view(settings.page_size),]
             .into()
     }
@@ -274,6 +318,98 @@ impl QueryTab {
         .align_y(Alignment::Center);
 
         column![scroll, horizontal_divider(), container(pager).padding([2.0, style::S2])].into()
+    }
+}
+
+/// Keys that drive autocomplete. Arrows, Enter, Tab and Esc only belong to
+/// the popup while it is open.
+fn completion_key(key: &Key, modifiers: iced::keyboard::Modifiers, popup: bool) -> Option<Message> {
+    let plain = !modifiers.command() && !modifiers.alt() && !modifiers.shift();
+    match key {
+        Key::Named(Named::Space) if modifiers.command() => Some(Message::TriggerCompletion),
+        Key::Character(c) if modifiers.command() && c.as_str() == " " => Some(Message::TriggerCompletion),
+        _ if !popup || !plain => None,
+        Key::Named(Named::ArrowDown) => Some(Message::CompletionMove(1)),
+        Key::Named(Named::ArrowUp) => Some(Message::CompletionMove(-1)),
+        Key::Named(Named::PageDown) => Some(Message::CompletionMove(POPUP_ROWS as isize)),
+        Key::Named(Named::PageUp) => Some(Message::CompletionMove(-(POPUP_ROWS as isize))),
+        Key::Named(Named::Enter | Named::Tab) => Some(Message::AcceptCompletion(None)),
+        Key::Named(Named::Escape) => Some(Message::CloseCompletion),
+        _ => None,
+    }
+}
+
+/// Ctrl+Backspace / Ctrl+Delete delete a word (Alt on macOS), which the
+/// editor doesn't do by itself. A selection is simply deleted.
+fn delete_word(key: &Key, modifiers: iced::keyboard::Modifiers, has_selection: bool) -> Option<Binding<Message>> {
+    use text_editor::Motion;
+    if !modifiers.jump() {
+        return None;
+    }
+    let (motion, delete) = match key {
+        Key::Named(Named::Backspace) => (Motion::WordLeft, Binding::Backspace),
+        Key::Named(Named::Delete) => (Motion::WordRight, Binding::Delete),
+        _ => return None,
+    };
+    if has_selection {
+        return Some(delete);
+    }
+    Some(Binding::Sequence(vec![Binding::Select(motion), delete]))
+}
+
+const POPUP_ROWS: usize = 10;
+const POPUP_ROW_HEIGHT: f32 = 22.0;
+const POPUP_WIDTH: f32 = 380.0;
+/// From the popup's left edge to where its labels start.
+const POPUP_LABEL_INSET: f32 = style::S1 + style::S2 + style::ICON + style::S2;
+
+/// The autocomplete list, placed under the caret (or above it near the
+/// bottom of the window) with labels lined up with the word being typed.
+pub fn completion_popup<'a>(c: &'a Completion, caret: Rectangle, window: Size, font_size: f32) -> Element<'a, Message> {
+    let start = (c.selected + 1).saturating_sub(POPUP_ROWS);
+    let mut list = column![].padding(style::S1);
+    for (i, item) in c.items.iter().enumerate().skip(start).take(POPUP_ROWS) {
+        let (glyph, color) = kind_icon(item.kind);
+        let row = row![
+            style::icon_colored(glyph, Some(color)),
+            text(item.label.as_str()).font(style::MONO_FONT).size(style::BODY).wrapping(text::Wrapping::None),
+            space().width(Length::Fill),
+            style::dim(text(item.detail.as_str()).size(style::SMALL).wrapping(text::Wrapping::None)),
+        ]
+        .spacing(style::S2)
+        .align_y(Alignment::Center);
+        list = list.push(
+            button(row)
+                .width(Length::Fill)
+                .height(POPUP_ROW_HEIGHT)
+                .padding([0.0, style::S2])
+                .style(if i == c.selected { style::row_selected } else { style::flat })
+                .on_press(Message::AcceptCompletion(Some(i))),
+        );
+    }
+    let rows = c.items.len().min(POPUP_ROWS) as f32;
+    let height = rows * POPUP_ROW_HEIGHT + 2.0 * style::S1 + 2.0;
+    let popup = container(list).width(POPUP_WIDTH).style(style::menu);
+
+    // Hack's advance width is about 0.6 em.
+    let typed = c.replace as f32 * font_size * 0.6;
+    let x = (caret.x - typed - POPUP_LABEL_INSET).clamp(0.0, (window.width - POPUP_WIDTH - style::S2).max(0.0));
+    let below = caret.y + caret.height + 2.0;
+    let y = if below + height > window.height - style::S4 { (caret.y - height - 2.0).max(0.0) } else { below };
+    pin(popup).x(x).y(y).into()
+}
+
+fn kind_icon<'a>(kind: Kind) -> (iced::widget::Text<'a>, fn(&iced::Theme) -> iced::Color) {
+    match kind {
+        Kind::Column => (icon::symbol_field(), style::accent_color),
+        Kind::Alias => (icon::symbol_variable(), style::accent_color),
+        Kind::Table => (icon::table(), style::accent_color),
+        Kind::View => (icon::eye(), style::accent_color),
+        Kind::Schema => (icon::symbol_namespace(), style::dim_text),
+        Kind::Procedure => (icon::symbol_method(), crate::explorer::purple),
+        Kind::Function => (icon::symbol_operator(), crate::explorer::purple),
+        Kind::Database => (icon::database(), style::accent_color),
+        Kind::Keyword => (icon::symbol_keyword(), style::dim_text),
     }
 }
 
