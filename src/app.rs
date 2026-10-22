@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
-use iced::widget::{button, center, column, container, opaque, row, scrollable, space, stack, text};
+use iced::widget::{button, center, checkbox, column, container, opaque, row, scrollable, space, stack, text};
 use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
+use iced_aw::ContextMenu;
 use iced_code::{Action, Edit};
 
 use crate::complete::{self, Sources};
@@ -13,7 +14,7 @@ use crate::complete::{self, Sources};
 use crate::connect::{ConnectForm, FormMsg};
 use crate::db::catalog::{self, DbObject, SchemaInfo};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
-use crate::explorer::{Explorer, ExplorerMsg, Load, Request};
+use crate::explorer::{Explorer, ExplorerMsg, Load, Request, context_menu};
 use crate::files;
 use crate::preferences::{self, TrayStatus};
 use crate::query_tab::{QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
@@ -66,9 +67,17 @@ pub enum Message {
     Save,
     SaveAs,
     SavePicked(u64, Option<PathBuf>, AfterSave),
-    /// The unsaved-changes prompt: save, don't save, or cancel.
+    CloseOthers(u64),
+    CloseToRight(u64),
+    CloseAll,
+    CopyPath(String),
+    /// Unsaved-changes prompts: per file, save or don't save; for several
+    /// files, discard them all or go through them one by one.
     ConfirmSave,
     ConfirmDiscard,
+    ConfirmApplyRest(bool),
+    ConfirmDiscardAll,
+    ConfirmEach,
     ConfirmCancel,
 
     // Query tabs
@@ -111,8 +120,8 @@ pub struct App {
     tabs: Vec<QueryTab>,
     active: u64,
     next_tab_id: u64,
-    /// An unsaved-changes prompt waiting for an answer.
-    confirm: Option<Confirm>,
+    /// Tabs with unsaved changes being closed, one question at a time.
+    closing: Option<Closing>,
     /// Autocomplete metadata per database, loaded on first use.
     schemas: HashMap<String, Load<Arc<SchemaInfo>>>,
 
@@ -165,7 +174,7 @@ impl App {
             active: 0,
             next_tab_id: 1,
             schemas: HashMap::new(),
-            confirm: None,
+            closing: None,
             status: Status::Idle,
             settings: Settings::load(),
             drag: None,
@@ -266,11 +275,85 @@ impl App {
 
     /// Quits, unless some tabs have unsaved changes: then asks first.
     fn request_quit(&mut self) -> Task<Message> {
-        if !self.tabs.iter().any(|t| t.dirty) {
-            return self.quit();
+        let ids = self.tabs.iter().map(|t| t.id).collect();
+        self.close_tabs(ids, true)
+    }
+
+    /// Closes tabs. Those without unsaved changes go at once; for the rest
+    /// the user is asked (one prompt, or an overview first if there are
+    /// several). With `then_quit`, quits once they're all handled.
+    fn close_tabs(&mut self, ids: Vec<u64>, then_quit: bool) -> Task<Message> {
+        let (dirty, clean): (Vec<u64>, Vec<u64>) =
+            ids.into_iter().partition(|id| self.tabs.iter().any(|t| t.id == *id && t.dirty));
+        let mut tasks: Vec<Task<Message>> = clean.into_iter().map(|id| self.close_tab(id)).collect();
+        match dirty.first() {
+            None if then_quit => tasks.push(self.quit()),
+            None => {}
+            Some(&first) => {
+                self.active = first;
+                self.closing = Some(Closing {
+                    total: dirty.len(),
+                    overview: dirty.len() > 1,
+                    queue: dirty.into(),
+                    then_quit,
+                    apply_rest: false,
+                    remembered: None,
+                    saving: false,
+                });
+                if then_quit {
+                    tasks.push(self.show_window());
+                }
+            }
         }
-        self.confirm = Some(Confirm::Quit);
-        self.show_window()
+        Task::batch(tasks)
+    }
+
+    /// Answers the question about the first tab in the closing queue.
+    fn decide(&mut self, choice: Choice) -> Task<Message> {
+        let Some(c) = &mut self.closing else {
+            return Task::none();
+        };
+        let Some(&id) = c.queue.front() else {
+            return self.next_to_close();
+        };
+        if c.apply_rest {
+            c.remembered = Some(choice);
+        }
+        match choice {
+            Choice::Discard => {
+                c.queue.pop_front();
+                let close = self.close_tab(id);
+                Task::batch([close, self.next_to_close()])
+            }
+            Choice::Save => {
+                c.saving = true;
+                self.save(id, false, AfterSave::CloseAndContinue)
+            }
+        }
+    }
+
+    /// Moves on to the next tab to close, or finishes (and quits if asked).
+    fn next_to_close(&mut self) -> Task<Message> {
+        let Some(c) = &mut self.closing else {
+            return Task::none();
+        };
+        let tabs = &self.tabs;
+        c.queue.retain(|id| tabs.iter().any(|t| t.id == *id));
+        c.saving = false;
+        match c.queue.front() {
+            None => {
+                let quit = c.then_quit;
+                self.closing = None;
+                if quit { self.quit() } else { Task::none() }
+            }
+            Some(&id) => {
+                self.active = id;
+                match c.remembered {
+                    Some(choice) => self.decide(choice),
+                    None => Task::none(),
+                }
+            }
+        }
     }
 
     fn close_tab(&mut self, id: u64) -> Task<Message> {
@@ -318,6 +401,8 @@ impl App {
         };
         if let Err(e) = files::write(&path, &tab.editor.text()) {
             self.status = Status::Error(e);
+            // Don't close anything else after a failed save.
+            self.closing = None;
             return Task::none();
         }
         tab.title = files::display_name(&path);
@@ -327,7 +412,13 @@ impl App {
         self.status = Status::Info(saved);
         match after {
             AfterSave::Nothing => Task::none(),
-            AfterSave::CloseTab => self.close_tab(id),
+            AfterSave::CloseAndContinue => {
+                if let Some(c) = &mut self.closing {
+                    c.queue.retain(|i| *i != id);
+                }
+                let close = self.close_tab(id);
+                Task::batch([close, self.next_to_close()])
+            }
         }
     }
 
@@ -499,14 +590,21 @@ impl App {
             }
 
             Message::SelectTab(id) => self.active = id,
-            Message::CloseTab(id) => {
-                if self.tab(id).is_some_and(|t| t.dirty) {
-                    self.active = id;
-                    self.confirm = Some(Confirm::CloseTab(id));
-                    return Task::none();
-                }
-                return self.close_tab(id);
+            Message::CloseTab(id) => return self.close_tabs(vec![id], false),
+            Message::CloseOthers(keep) => {
+                self.active = keep;
+                let ids = self.tabs.iter().map(|t| t.id).filter(|id| *id != keep).collect();
+                return self.close_tabs(ids, false);
             }
+            Message::CloseToRight(id) => {
+                let ids = self.tabs.iter().map(|t| t.id).skip_while(|t| *t != id).skip(1).collect();
+                return self.close_tabs(ids, false);
+            }
+            Message::CloseAll => {
+                let ids = self.tabs.iter().map(|t| t.id).collect();
+                return self.close_tabs(ids, false);
+            }
+            Message::CopyPath(path) => return iced::clipboard::write(path),
             Message::OpenFile => {
                 let dir = self.file_dir();
                 return Task::perform(files::pick_open(dir), Message::OpenPaths);
@@ -545,21 +643,39 @@ impl App {
             },
             Message::Save => return self.save(self.active, false, AfterSave::Nothing),
             Message::SaveAs => return self.save(self.active, true, AfterSave::Nothing),
-            Message::SavePicked(id, path, after) => {
-                if let Some(path) = path {
-                    return self.write_tab(id, path, after);
+            Message::SavePicked(id, path, after) => match path {
+                Some(path) => return self.write_tab(id, path, after),
+                // The save dialog was cancelled: back to the question.
+                None => {
+                    if let Some(c) = &mut self.closing {
+                        c.saving = false;
+                        c.remembered = None;
+                    }
+                }
+            },
+            Message::ConfirmSave => return self.decide(Choice::Save),
+            Message::ConfirmDiscard => return self.decide(Choice::Discard),
+            Message::ConfirmApplyRest(on) => {
+                if let Some(c) = &mut self.closing {
+                    c.apply_rest = on;
                 }
             }
-            Message::ConfirmSave => match self.confirm.take() {
-                Some(Confirm::CloseTab(id)) => return self.save(id, false, AfterSave::CloseTab),
-                Some(Confirm::Quit) | None => {}
-            },
-            Message::ConfirmDiscard => match self.confirm.take() {
-                Some(Confirm::CloseTab(id)) => return self.close_tab(id),
-                Some(Confirm::Quit) => return self.quit(),
-                None => {}
-            },
-            Message::ConfirmCancel => self.confirm = None,
+            Message::ConfirmDiscardAll => {
+                let Some(c) = self.closing.take() else {
+                    return Task::none();
+                };
+                let mut tasks: Vec<Task<Message>> = c.queue.into_iter().map(|id| self.close_tab(id)).collect();
+                if c.then_quit {
+                    tasks.push(self.quit());
+                }
+                return Task::batch(tasks);
+            }
+            Message::ConfirmEach => {
+                if let Some(c) = &mut self.closing {
+                    c.overview = false;
+                }
+            }
+            Message::ConfirmCancel => self.closing = None,
             Message::Edit(action) => {
                 let while_typing = self.settings.complete_while_typing;
                 let Some(tab) = self.active_tab() else {
@@ -641,7 +757,7 @@ impl App {
             Message::Run => return self.run_tab(self.active),
             Message::Cancel => {
                 // Esc closes an open dialog first.
-                if self.confirm.take().is_some() {
+                if self.closing.take().is_some() {
                     return Task::none();
                 }
                 if self.settings_open {
@@ -880,8 +996,9 @@ impl App {
 
         // The root is always the same stack, so showing a popup or dialog
         // doesn't rebuild the widget tree (which would drop editor focus).
-        let overlay: Element<'_, Message> = if let Some(confirm) = &self.confirm {
-            opaque(center(self.confirm_view(confirm)).style(backdrop))
+        let prompt = self.closing.as_ref().filter(|c| !c.saving);
+        let overlay: Element<'_, Message> = if let Some(closing) = prompt {
+            opaque(center(self.confirm_view(closing)).style(backdrop))
         } else if self.settings_open {
             opaque(center(preferences::view(&self.settings, &self.tray)).style(backdrop))
         } else if self.dialog_open {
@@ -895,51 +1012,80 @@ impl App {
         stack![base, overlay].into()
     }
 
-    /// The "save changes?" prompt.
-    fn confirm_view(&self, confirm: &Confirm) -> Element<'_, Message> {
-        let (title, body, save) = match confirm {
-            Confirm::CloseTab(id) => {
-                let name = self.tabs.iter().find(|t| t.id == *id).map_or("this query", |t| t.title.as_str());
-                (
-                    format!("Save changes to {name}?"),
-                    "Your changes will be lost if you don't save them.".to_string(),
-                    true,
-                )
-            }
-            Confirm::Quit => {
-                let n = self.tabs.iter().filter(|t| t.dirty).count();
-                let what = if n == 1 { "1 query has".to_string() } else { format!("{n} queries have") };
-                ("Quit litedb?".to_string(), format!("{what} unsaved changes that will be lost."), false)
-            }
-        };
+    /// The unsaved-changes prompts: an overview when several tabs are
+    /// affected, then one question per file.
+    fn confirm_view<'a>(&'a self, c: &'a Closing) -> Element<'a, Message> {
         let action = |label: &'static str, msg: Message, style: fn(&Theme, button::Status) -> button::Style| {
             button(text(label).size(style::BODY)).padding([style::S1 + 2.0, style::S3]).style(style).on_press(msg)
         };
         let mut buttons = row![space().width(Length::Fill)].spacing(style::S2);
         buttons = buttons.push(action("Cancel", Message::ConfirmCancel, style::neutral));
-        if save {
+        let mut body = column![].spacing(style::S3);
+
+        let title = if c.overview {
+            let verb = if c.then_quit { "quit" } else { "close" };
+            body = body.push(style::dim(
+                text(format!(
+                    "You're about to {verb} {} tabs with unsaved changes. Close them all without saving,                      or choose for each file?",
+                    c.queue.len()
+                ))
+                .size(style::BODY),
+            ));
+            let mut names = column![].spacing(2);
+            for id in &c.queue {
+                if let Some(tab) = self.tabs.iter().find(|t| t.id == *id) {
+                    names = names.push(
+                        row![style::dim(icon::file_code().size(12)), text(tab.title.as_str()).size(style::BODY)]
+                            .spacing(style::S2)
+                            .align_y(Alignment::Center),
+                    );
+                }
+            }
+            body = body.push(container(names).padding(iced::Padding { left: style::S2, ..iced::Padding::ZERO }));
+            let discard = if c.then_quit { "Quit Without Saving" } else { "Close Without Saving" };
+            buttons = buttons.push(action(discard, Message::ConfirmDiscardAll, style::neutral));
+            buttons = buttons.push(action("Choose Per File", Message::ConfirmEach, style::success));
+            "Unsaved changes".to_string()
+        } else {
+            let id = c.queue.front().copied();
+            let name = self.tabs.iter().find(|t| Some(t.id) == id).map_or("this query", |t| t.title.as_str());
+            body = body.push(style::dim(text("Your changes will be lost if you don't save them.").size(style::BODY)));
+            let rest = c.queue.len().saturating_sub(1);
+            if rest > 0 {
+                body = body.push(
+                    checkbox(c.apply_rest)
+                        .label(format!(
+                            "Do the same for the remaining {rest} {}",
+                            if rest == 1 { "file" } else { "files" }
+                        ))
+                        .on_toggle(Message::ConfirmApplyRest)
+                        .size(14)
+                        .text_size(style::BODY),
+                );
+            }
             buttons = buttons.push(action("Don't Save", Message::ConfirmDiscard, style::neutral));
             buttons = buttons.push(action("Save", Message::ConfirmSave, style::success));
-        } else {
-            buttons = buttons.push(action("Quit Without Saving", Message::ConfirmDiscard, style::neutral));
-        }
-        let content = column![
-            row![
-                style::icon_colored(icon::warning(), Some(|t: &Theme| t.extended_palette().warning.base.color)),
-                text(title).size(style::TITLE).font(style::UI_BOLD),
-            ]
-            .spacing(style::S2)
-            .align_y(Alignment::Center),
-            style::dim(text(body).size(style::BODY)),
-            buttons,
+            format!("Save changes to {name}?")
+        };
+
+        let mut header = row![
+            style::icon_colored(icon::warning(), Some(|t: &Theme| t.extended_palette().warning.base.color)),
+            text(title).size(style::TITLE).font(style::UI_BOLD),
         ]
-        .spacing(style::S4)
-        .padding(style::S4 + 4.0);
-        container(content).width(440).style(style::dialog).into()
+        .spacing(style::S2)
+        .align_y(Alignment::Center);
+        if !c.overview && c.total > 1 {
+            let n = c.total - c.queue.len() + 1;
+            header = header
+                .push(space().width(Length::Fill))
+                .push(style::dim(text(format!("{n} of {}", c.total)).size(style::SMALL)));
+        }
+        let content = column![header, body, buttons].spacing(style::S4).padding(style::S4 + 4.0);
+        container(content).width(460).style(style::dialog).into()
     }
 
     fn completion_view(&self) -> Option<Element<'_, Message>> {
-        if self.settings_open || self.dialog_open || self.confirm.is_some() {
+        if self.settings_open || self.dialog_open || self.closing.is_some() {
             return None;
         }
         let tab = self.tabs.iter().find(|t| t.id == self.active)?;
@@ -1002,6 +1148,22 @@ impl App {
             .into()
     }
 
+    /// Right-click menu for a tab.
+    fn tab_menu(&self, tab: &QueryTab) -> Vec<(&'static str, Message)> {
+        let mut items = vec![("Close", Message::CloseTab(tab.id))];
+        if self.tabs.len() > 1 {
+            items.push(("Close Others", Message::CloseOthers(tab.id)));
+        }
+        if self.tabs.last().is_some_and(|t| t.id != tab.id) {
+            items.push(("Close to the Right", Message::CloseToRight(tab.id)));
+        }
+        items.push(("Close All", Message::CloseAll));
+        if let Some(path) = &tab.path {
+            items.push(("Copy Path", Message::CopyPath(path.display().to_string())));
+        }
+        items
+    }
+
     fn tab_strip(&self) -> Element<'_, Message> {
         let toggle_icon = if self.sidebar_open { icon::layout_sidebar_left() } else { icon::layout_sidebar_left_off() };
         let mut strip = row![style::tip(
@@ -1031,17 +1193,17 @@ impl App {
                 .style(move |t: &Theme, s| tab_close_button(t, s, active))
                 .padding([2.0, 2.0])
                 .on_press(Message::CloseTab(tab.id));
-            strip = strip.push(
-                button(row![label, close].spacing(style::S2).align_y(Alignment::Center))
-                    .style(move |t: &Theme, s| tab_button(t, s, active))
-                    .padding(iced::Padding {
-                        top: style::S2 - 1.0,
-                        right: style::S2,
-                        bottom: style::S2 - 1.0,
-                        left: style::S3,
-                    })
-                    .on_press(Message::SelectTab(tab.id)),
-            );
+            let tab_button = button(row![label, close].spacing(style::S2).align_y(Alignment::Center))
+                .style(move |t: &Theme, s| tab_button(t, s, active))
+                .padding(iced::Padding {
+                    top: style::S2 - 1.0,
+                    right: style::S2,
+                    bottom: style::S2 - 1.0,
+                    left: style::S3,
+                })
+                .on_press(Message::SelectTab(tab.id));
+            let menu = self.tab_menu(tab);
+            strip = strip.push(ContextMenu::new(tab_button, move || context_menu(&menu)));
         }
         strip = strip.push(
             container(row![
@@ -1171,13 +1333,32 @@ fn changes_schema(sql: &str) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub enum AfterSave {
     Nothing,
-    CloseTab,
+    /// Close the tab and move on to the next one being closed.
+    CloseAndContinue,
 }
 
-/// A question about unsaved changes.
-enum Confirm {
-    CloseTab(u64),
-    Quit,
+/// Closing tabs that have unsaved changes.
+struct Closing {
+    /// Tabs still to decide on; the first one is being asked about.
+    queue: VecDeque<u64>,
+    /// How many there were to begin with, for "2 of 4".
+    total: usize,
+    /// Quit once every tab is handled.
+    then_quit: bool,
+    /// Showing the "N tabs have unsaved changes" overview first.
+    overview: bool,
+    /// "Do the same for the remaining files" is ticked.
+    apply_rest: bool,
+    /// The choice to repeat for the remaining files.
+    remembered: Option<Choice>,
+    /// A save dialog is open, so the prompt is hidden.
+    saving: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Choice {
+    Save,
+    Discard,
 }
 
 fn close_conn(conn: Option<Connection>) -> Task<Message> {

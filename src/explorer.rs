@@ -327,7 +327,7 @@ fn column_leaf<'a>(level: u16, c: &ColumnInfo) -> Element<'a, Message> {
     .into()
 }
 
-fn context_menu<'a>(items: &[(&'static str, Message)]) -> Element<'a, Message> {
+pub fn context_menu<'a>(items: &[(&'static str, Message)]) -> Element<'a, Message> {
     let mut list = column![].spacing(1).width(200);
     for (label, msg) in items {
         list = list.push(
