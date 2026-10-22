@@ -852,7 +852,10 @@ impl App {
         let close = self.end_session();
         self.form.remember_password();
         let profile = self.form.form.clone();
-        let label = format!("{} ({})", profile.host, profile.driver);
+        let label = match profile.name.trim() {
+            "" => format!("{} ({})", profile.host, profile.driver),
+            name => format!("{name} ({})", profile.host),
+        };
         self.status = Status::Info(format!("Connected. {}", c.server_version));
         let database = c.database.clone();
         self.session = Some(Session { profile, password: self.form.password.clone(), explorer_conn: c.conn });
