@@ -9,7 +9,7 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Object Explorer** in the style of SSMS: server → databases → tables, views, stored procedures, functions and triggers, with columns (type, nullability, primary key) under each table. Everything loads lazily as you expand it.
 - **Right-click actions**: *Select Top 1000 Rows*, *Script* (view/procedure/function/trigger source), *New Query* in a given database, *Refresh*.
 - **Query tabs**, each with its own connection, so a long query never blocks the tree and a `USE` in one tab doesn't affect another.
-- **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent and comment toggling (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
+- **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent, comment toggling, and find and replace with match case, whole word and replace all (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
 - **Open and save `.sql` files** (also by dragging them onto the window, or `litedb file.sql`). Files saved by SSMS in UTF-16 open fine. Unsaved tabs show a dot, and closing or quitting asks before discarding changes.
 - **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
 - **Results grid** with multiple result sets, paging, right-aligned numbers and distinct `NULL`s, plus a Messages tab with row counts, errors and timings.
@@ -100,11 +100,13 @@ Then connect to `localhost`, port `1433`, user `sa`. [`examples/persons.sql`](ex
 | Shortcut | Action |
 |---|---|
 | `F5` / `Ctrl+Enter` | Run script or selection |
-| `Esc` | Cancel running query / close dialog |
+| `Esc` | Cancel running query / close dialog or find bar |
 | `Ctrl+N` | New query tab |
 | `Ctrl+O` | Open file |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+,` | Settings |
+| `Ctrl+F` / `Ctrl+H` | Find / find and replace (`Enter` and `Shift+Enter` move between matches) |
+| `F3` / `Shift+F3` | Next / previous match |
 | `Ctrl+Space` | Autocomplete (`↑`/`↓` to choose, `Enter`/`Tab` to insert) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
 | `Ctrl+/` | Comment or uncomment lines |

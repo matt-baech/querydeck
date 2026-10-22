@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use iced::keyboard::{Key, key::Named};
-use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text};
+use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text, text_input};
 use iced::{Alignment, Element, Font, Length, Rectangle, Size, mouse, task};
 use iced_code::{Binding, LineEnding, code_editor};
 
@@ -15,6 +15,23 @@ use crate::style::{self, icon};
 
 /// Long cell values are cut to this many characters in the grid.
 const MAX_CELL_CHARS: usize = 120;
+
+/// The find (and replace) bar above the editor.
+#[derive(Debug, Clone, Default)]
+pub struct FindBar {
+    pub query: String,
+    pub replacement: String,
+    pub match_case: bool,
+    pub whole_word: bool,
+    /// The replace row is showing.
+    pub replace: bool,
+}
+
+impl FindBar {
+    pub fn search(&self) -> iced_code::Search {
+        iced_code::Search { text: self.query.clone(), match_case: self.match_case, whole_word: self.whole_word }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultsPane {
@@ -33,6 +50,9 @@ pub struct QueryTab {
     pub editor_id: Id,
     /// The open autocomplete popup.
     pub completion: Option<Completion>,
+    pub find: Option<FindBar>,
+    pub find_id: Id,
+    pub replace_id: Id,
     /// Autocomplete is waiting for the database's metadata to load.
     pub completion_pending: bool,
     /// The last script run may have changed the schema (CREATE, ALTER, DROP).
@@ -61,6 +81,9 @@ impl QueryTab {
             editor: iced_code::Content::with_text(sql),
             editor_id: Id::unique(),
             completion: None,
+            find: None,
+            find_id: Id::unique(),
+            replace_id: Id::unique(),
             completion_pending: false,
             ran_ddl: false,
             current_db: database.clone().unwrap_or_default(),
@@ -181,8 +204,90 @@ impl QueryTab {
                 Binding::from_key_press(press)
             });
 
-        column![toolbar, horizontal_divider(), editor, splitter(Drag::Editor), self.results_view(settings.page_size),]
-            .into()
+        let mut layout = column![toolbar, horizontal_divider()];
+        if let Some(find) = &self.find {
+            layout = layout.push(self.find_view(find)).push(horizontal_divider());
+        }
+        layout.push(editor).push(splitter(Drag::Editor)).push(self.results_view(settings.page_size)).into()
+    }
+
+    fn find_view<'a>(&'a self, find: &'a FindBar) -> Element<'a, Message> {
+        const INPUT_WIDTH: f32 = 280.0;
+        let input = |id: &Id, placeholder: &str, value: &str| {
+            text_input(placeholder, value)
+                .id(id.clone())
+                .size(style::BODY)
+                .padding([3.0, style::S2])
+                .style(style::input)
+        };
+        let toggle = |glyph: text::Text<'a>, on: bool, msg: Message, label: &'a str| {
+            style::tip(
+                button(glyph.size(style::ICON))
+                    .padding([style::S1, style::S1 + 2.0])
+                    .style(if on { style::row_selected } else { style::flat })
+                    .on_press(msg),
+                label,
+            )
+        };
+        let tool = |glyph: text::Text<'a>, msg: Option<Message>, label: &'a str| {
+            style::tip(style::tool_button(glyph.size(style::ICON), None, msg), label)
+        };
+
+        let has_query = !find.query.is_empty();
+        let count = self.editor.match_count();
+        let summary = match self.editor.current_match() {
+            _ if !has_query => String::new(),
+            _ if count == 0 => "No results".into(),
+            Some(i) => format!("{} of {count}", i + 1),
+            None => format!("{count} found"),
+        };
+
+        let chevron = if find.replace { icon::chevron_down() } else { icon::chevron_right() };
+        let find_row = row![
+            input(&self.find_id, "Find", &find.query)
+                .on_input(Message::FindInput)
+                .on_submit(Message::FindSubmit)
+                .width(INPUT_WIDTH),
+            toggle(icon::case_sensitive(), find.match_case, Message::ToggleMatchCase, "Match case"),
+            toggle(icon::whole_word(), find.whole_word, Message::ToggleWholeWord, "Whole word"),
+            style::dim(text(summary).size(style::SMALL)).width(80),
+            tool(icon::arrow_up(), (count > 0).then_some(Message::FindPrevious), "Previous match (Shift+F3)"),
+            tool(icon::arrow_down(), (count > 0).then_some(Message::FindNext), "Next match (F3)"),
+            space().width(Length::Fill),
+            tool(icon::close(), Some(Message::CloseFind), "Close (Esc)"),
+        ]
+        .spacing(style::S1)
+        .align_y(Alignment::Center);
+        let find_row = row![
+            tool(chevron, Some(Message::ToggleReplace), "Toggle replace (Ctrl+H)"),
+            container(find_row).width(Length::Fill)
+        ]
+        .spacing(style::S1)
+        .align_y(Alignment::Center);
+
+        let mut bar = column![find_row].spacing(style::S1);
+        if find.replace {
+            let action = |label: &'a str, msg: Message| {
+                button(text(label).size(style::SMALL))
+                    .padding([3.0, style::S2])
+                    .style(style::neutral)
+                    .on_press_maybe((count > 0).then_some(msg))
+            };
+            bar = bar.push(
+                row![
+                    space().width(26),
+                    input(&self.replace_id, "Replace", &find.replacement)
+                        .on_input(Message::ReplaceInput)
+                        .on_submit(Message::Replace)
+                        .width(INPUT_WIDTH),
+                    action("Replace", Message::Replace),
+                    action("Replace All", Message::ReplaceAll),
+                ]
+                .spacing(style::S1)
+                .align_y(Alignment::Center),
+            );
+        }
+        container(bar).padding([style::S1, style::S2]).into()
     }
 
     fn results_view(&self, page_size: usize) -> Element<'_, Message> {

@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
-use iced::widget::{button, center, checkbox, column, container, opaque, row, scrollable, space, stack, text};
+use iced::widget::{
+    button, center, checkbox, column, container, opaque, operation, row, scrollable, space, stack, text,
+};
 use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
 use iced_aw::ContextMenu;
 use iced_code::{Action, Edit};
@@ -17,7 +19,7 @@ use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Load, Request, context_menu};
 use crate::files;
 use crate::preferences::{self, TrayStatus};
-use crate::query_tab::{QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
+use crate::query_tab::{FindBar, QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
 use crate::style::{self, icon};
 use crate::tray::{self, TrayEvent};
@@ -34,6 +36,7 @@ pub enum Message {
     SetCompleteWhileTyping(bool),
     Tray(TrayEvent),
     CloseRequested,
+    ModifiersChanged(keyboard::Modifiers),
     Resized(iced::Size),
     Moved(Point),
     /// The window's size or position changed; `bool` is whether it's now
@@ -51,6 +54,22 @@ pub enum Message {
     Connect,
     Connected(Result<Connected, String>),
     Disconnect,
+
+    // Find and replace
+    /// Opens the find bar; `true` also shows the replace row.
+    OpenFind(bool),
+    CloseFind,
+    FindInput(String),
+    ReplaceInput(String),
+    ToggleMatchCase,
+    ToggleWholeWord,
+    ToggleReplace,
+    /// Enter in the find box: next match, or previous with Shift.
+    FindSubmit,
+    FindNext,
+    FindPrevious,
+    Replace,
+    ReplaceAll,
 
     // Object Explorer
     ToggleSidebar,
@@ -134,6 +153,8 @@ pub struct App {
     /// The main window, or `None` while litedb sits in the tray.
     window: Option<window::Id>,
     window_size: iced::Size,
+    /// Held modifier keys, for Shift+Enter in the find box.
+    modifiers: keyboard::Modifiers,
     /// Light or dark, as the desktop currently prefers.
     system_mode: Mode,
 }
@@ -183,6 +204,7 @@ impl App {
             tray: TrayStatus::Off,
             window: None,
             window_size: iced::Size::ZERO,
+            modifiers: keyboard::Modifiers::default(),
             system_mode: Mode::Dark,
         };
         app.open_tab(None, "", None);
@@ -226,9 +248,19 @@ impl App {
             iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::OpenPaths(vec![path])),
                 iced::Event::Window(window::Event::Moved(position)) => Some(Message::Moved(position)),
+                iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(Message::ModifiersChanged(m)),
                 _ => None,
             }),
         ];
+        // The find boxes swallow Esc, so listen for it whatever has focus.
+        if self.tabs.iter().any(|t| t.id == self.active && t.find.is_some()) {
+            subs.push(iced::event::listen_with(|event, _status, _window| match event {
+                iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => {
+                    Some(Message::CloseFind)
+                }
+                _ => None,
+            }));
+        }
         if self.settings.minimize_to_tray {
             subs.push(tray::subscription().map(Message::Tray));
         }
@@ -278,6 +310,21 @@ impl App {
             Some(id) => window::close(id),
             None => Task::none(),
         }
+    }
+
+    /// Changes the find bar, then searches again from the cursor so the
+    /// selection follows what's typed.
+    fn update_find(&mut self, change: impl FnOnce(&mut FindBar)) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let Some(find) = &mut tab.find else {
+            return;
+        };
+        change(find);
+        let search = find.search();
+        tab.editor.set_search(Some(search));
+        let _ = tab.editor.find_from_cursor();
     }
 
     /// Asks whether the window is maximized before recording a new size or
@@ -719,6 +766,94 @@ impl App {
                 }
             }
             Message::ConfirmCancel => self.closing = None,
+            Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            Message::OpenFind(replace) => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                tab.completion = None;
+                let find = tab.find.get_or_insert_with(FindBar::default);
+                find.replace = replace;
+                // Search for the selected text, like most editors.
+                if let Some(selected) = tab.editor.selection().filter(|s| !s.is_empty() && !s.contains('\n')) {
+                    find.query = selected;
+                }
+                let search = find.search();
+                tab.editor.set_search(Some(search));
+                let id = if replace && !find.query.is_empty() { tab.replace_id.clone() } else { tab.find_id.clone() };
+                return Task::batch([operation::focus(id.clone()), operation::select_all(id)]);
+            }
+            Message::CloseFind => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                if tab.find.take().is_none() {
+                    return Task::none();
+                }
+                tab.editor.set_search(None);
+                return operation::focus(tab.editor_id.clone());
+            }
+            Message::FindInput(query) => self.update_find(|f| f.query = query),
+            Message::ToggleMatchCase => self.update_find(|f| f.match_case = !f.match_case),
+            Message::ToggleWholeWord => self.update_find(|f| f.whole_word = !f.whole_word),
+            Message::ReplaceInput(replacement) => {
+                if let Some(find) = self.active_tab().and_then(|t| t.find.as_mut()) {
+                    find.replacement = replacement;
+                }
+            }
+            Message::ToggleReplace => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                let Some(find) = &mut tab.find else {
+                    return Task::none();
+                };
+                find.replace = !find.replace;
+                let id = if find.replace { tab.replace_id.clone() } else { tab.find_id.clone() };
+                return operation::focus(id);
+            }
+            Message::FindSubmit => {
+                let previous = self.modifiers.shift();
+                if let Some(tab) = self.active_tab() {
+                    let _ = if previous { tab.editor.find_previous() } else { tab.editor.find_next() };
+                }
+            }
+            Message::FindNext | Message::FindPrevious => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                if tab.find.is_none() {
+                    return self.update(Message::OpenFind(false));
+                }
+                let _ = if matches!(message, Message::FindNext) {
+                    tab.editor.find_next()
+                } else {
+                    tab.editor.find_previous()
+                };
+            }
+            Message::Replace => {
+                if let Some(tab) = self.active_tab()
+                    && let Some(find) = &tab.find
+                {
+                    let replacement = find.replacement.clone();
+                    tab.dirty |= tab.editor.replace(&replacement);
+                }
+            }
+            Message::ReplaceAll => {
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                let Some(find) = &tab.find else {
+                    return Task::none();
+                };
+                let replacement = find.replacement.clone();
+                let count = tab.editor.replace_all(&replacement);
+                tab.dirty |= count > 0;
+                self.status = Status::Info(match count {
+                    1 => "Replaced 1 occurrence.".into(),
+                    n => format!("Replaced {n} occurrences."),
+                });
+            }
             Message::Edit(action) => {
                 let while_typing = self.settings.complete_while_typing;
                 let Some(tab) = self.active_tab() else {
@@ -1364,6 +1499,9 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
             Some(if modifiers.shift() { Message::SaveAs } else { Message::Save })
         }
         Key::Character(c) if modifiers.command() && c.as_str() == "," => Some(Message::OpenSettings),
+        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("f") => Some(Message::OpenFind(false)),
+        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("h") => Some(Message::OpenFind(true)),
+        Key::Named(Named::F3) => Some(if modifiers.shift() { Message::FindPrevious } else { Message::FindNext }),
         _ => None,
     }
 }
