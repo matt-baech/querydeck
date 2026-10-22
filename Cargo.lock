@@ -1658,6 +1658,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iced_code"
+version = "0.1.0"
+dependencies = [
+ "iced_core",
+ "iced_graphics",
+ "iced_highlighter",
+ "log",
+]
+
+[[package]]
 name = "iced_core"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2116,6 +2126,7 @@ dependencies = [
  "futures-util",
  "iced",
  "iced_aw",
+ "iced_code",
  "iced_fonts",
  "keyring",
  "ksni",

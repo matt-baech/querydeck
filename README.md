@@ -9,7 +9,8 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Object Explorer** in the style of SSMS: server → databases → tables, views, stored procedures, functions and triggers, with columns (type, nullability, primary key) under each table. Everything loads lazily as you expand it.
 - **Right-click actions**: *Select Top 1000 Rows*, *Script* (view/procedure/function/trigger source), *New Query* in a given database, *Refresh*.
 - **Query tabs**, each with its own connection, so a long query never blocks the tree and a `USE` in one tab doesn't affect another.
-- **SQL editor** with syntax highlighting. Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
+- **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent and comment toggling (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
+- **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
 - **Results grid** with multiple result sets, paging, right-aligned numbers and distinct `NULL`s, plus a Messages tab with row counts, errors and timings.
 - **Cancel** a running query on the server.
 - **Saved connections**, with passwords stored in your OS keyring (KWallet / GNOME Keyring / Windows Credential Manager), never in plain text.
@@ -35,7 +36,10 @@ Install Rust 1.88 or newer:
 
 ### 3. Build and install
 
+litedb uses the editor widget from [iced_code](https://github.com/matt-baech/iced_code), which must be cloned next to it:
+
 ```bash
+git clone https://github.com/matt-baech/iced_code.git
 git clone https://github.com/matt-baech/litedb.git
 cd litedb
 cargo install --path .
@@ -105,10 +109,15 @@ Then connect to `localhost`, port `1433`, user `sa`. [`examples/persons.sql`](ex
 | `Esc` | Cancel running query / close dialog |
 | `Ctrl+N` | New query tab |
 | `Ctrl+,` | Settings |
+| `Ctrl+Space` | Autocomplete (`↑`/`↓` to choose, `Enter`/`Tab` to insert) |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+| `Ctrl+/` | Comment or uncomment lines |
+| `Tab` / `Shift+Tab` | Indent / unindent selection |
+| `Ctrl+Backspace` / `Ctrl+Delete` | Delete word |
 
 ### Settings
 
-Open with the gear icon in the status bar or `Ctrl+,`: theme, editor font size, rows per page, and minimize to tray on close.
+Open with the gear icon in the status bar or `Ctrl+,`: theme, editor font size, rows per page, suggest while typing, and minimize to tray on close.
 
 Settings and saved connections are stored as JSON in your config directory:
 
@@ -126,11 +135,12 @@ Passwords are never written there. They live in the OS keyring under the service
 - PostgreSQL's Object Explorer shows only the database you're connected to.
 - SQL Server: SQL logins only (no Windows Integrated Authentication). Only table triggers are listed.
 - A query keeps at most 100,000 rows per result set.
-- The editor has no line numbers, and grid cells can't be selected or copied yet.
+- Grid cells can't be selected or copied yet.
+- Autocomplete doesn't know CTE names, subquery aliases or tables in other databases (`otherdb.dbo.table`).
 - macOS: while litedb is in the tray, clicking its Dock icon doesn't bring the window back; use the menu-bar icon.
 
 ## Built with
 
-[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) and [tray-icon](https://github.com/tauri-apps/tray-icon) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus)
+[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) and [tray-icon](https://github.com/tauri-apps/tray-icon) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus) · [iced_code](https://github.com/matt-baech/iced_code) (editor)
 
 Bundled fonts: [Inter](https://rsms.me/inter/) (SIL Open Font License 1.1), [Hack](https://sourcefoundry.org/hack/) (MIT), and [Codicons](https://github.com/microsoft/vscode-codicons) (CC BY 4.0). Their licence texts are in [`assets/fonts`](assets/fonts).

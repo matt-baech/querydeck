@@ -313,9 +313,8 @@ fn field_border(theme: &Theme, hovered: bool, focused: bool) -> Border {
 }
 
 /// The query editor fills its pane, so it has no border at all.
-pub fn editor(theme: &Theme, status: iced::widget::text_editor::Status) -> iced::widget::text_editor::Style {
-    use iced::widget::text_editor;
-    let mut style = text_editor::default(theme, status);
+pub fn editor(theme: &Theme, status: iced_code::Status) -> iced_code::Style {
+    let mut style = iced_code::style::from_palette(theme.extended_palette(), status);
     style.border = Border::default();
     style.selection = theme.extended_palette().primary.base.color.scale_alpha(0.3);
     style

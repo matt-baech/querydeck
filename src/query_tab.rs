@@ -3,16 +3,15 @@
 use std::sync::Arc;
 
 use iced::keyboard::{Key, key::Named};
-use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text, text_editor};
+use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text};
 use iced::{Alignment, Element, Font, Length, Rectangle, Size, mouse, task};
+use iced_code::{Binding, LineEnding, code_editor};
 
 use crate::app::{Drag, Message, shortcut};
-use crate::caret::caret;
 use crate::complete::{Completion, Kind};
 use crate::db::{self, Connection, QueryOutcome};
 use crate::settings::Settings;
 use crate::style::{self, icon};
-use text_editor::Binding;
 
 /// Long cell values are cut to this many characters in the grid.
 const MAX_CELL_CHARS: usize = 120;
@@ -26,7 +25,7 @@ pub enum ResultsPane {
 pub struct QueryTab {
     pub id: u64,
     pub title: String,
-    pub editor: text_editor::Content,
+    pub editor: iced_code::Content,
     pub editor_id: Id,
     /// The open autocomplete popup.
     pub completion: Option<Completion>,
@@ -53,7 +52,7 @@ impl QueryTab {
         Self {
             id,
             title,
-            editor: text_editor::Content::with_text(sql),
+            editor: iced_code::Content::with_text(sql),
             editor_id: Id::unique(),
             completion: None,
             completion_pending: false,
@@ -87,7 +86,7 @@ impl QueryTab {
             }
             text.push_str(&line.text);
             if lines.peek().is_some() {
-                text.push_str(if line.ending == text_editor::LineEnding::None { "\n" } else { line.ending.as_str() });
+                text.push_str(if line.ending == LineEnding::None { "\n" } else { line.ending.as_str() });
             }
         }
         (text, cursor)
@@ -119,7 +118,6 @@ impl QueryTab {
         connected: bool,
         highlighter: iced::highlighter::Theme,
         settings: &Settings,
-        known_caret: Option<Rectangle>,
     ) -> Element<'a, Message> {
         let run: Element<'_, Message> = if self.running.is_some() {
             style::tip(
@@ -154,8 +152,7 @@ impl QueryTab {
         .align_y(Alignment::Center);
 
         let popup = self.completion.is_some();
-        let has_selection = self.editor.cursor().selection.is_some();
-        let editor = text_editor(&self.editor)
+        let editor = code_editor(&self.editor)
             .id(self.editor_id.clone())
             .on_action(Message::Edit)
             .highlight("sql", highlighter)
@@ -164,20 +161,17 @@ impl QueryTab {
             .style(style::editor)
             .height(settings.editor_height)
             .padding([style::S2, style::S3])
+            .comment_token("--")
             .key_binding(move |press| {
                 if let Some(m) = completion_key(&press.key, press.modifiers, popup) {
-                    return Some(text_editor::Binding::Custom(m));
+                    return Some(Binding::Custom(m));
                 }
                 if let Some(m) = shortcut(&press.key, press.modifiers) {
-                    return Some(text_editor::Binding::Custom(m));
+                    return Some(Binding::Custom(m));
                 }
-                if let Some(b) = delete_word(&press.key, press.modifiers, has_selection) {
-                    return Some(b);
-                }
-                text_editor::Binding::from_key_press(press)
+                Binding::from_key_press(press)
             });
 
-        let editor = caret(editor, known_caret, Message::CaretMoved);
         column![toolbar, horizontal_divider(), editor, splitter(Drag::Editor), self.results_view(settings.page_size),]
             .into()
     }
@@ -337,24 +331,6 @@ fn completion_key(key: &Key, modifiers: iced::keyboard::Modifiers, popup: bool) 
         Key::Named(Named::Escape) => Some(Message::CloseCompletion),
         _ => None,
     }
-}
-
-/// Ctrl+Backspace / Ctrl+Delete delete a word (Alt on macOS), which the
-/// editor doesn't do by itself. A selection is simply deleted.
-fn delete_word(key: &Key, modifiers: iced::keyboard::Modifiers, has_selection: bool) -> Option<Binding<Message>> {
-    use text_editor::Motion;
-    if !modifiers.jump() {
-        return None;
-    }
-    let (motion, delete) = match key {
-        Key::Named(Named::Backspace) => (Motion::WordLeft, Binding::Backspace),
-        Key::Named(Named::Delete) => (Motion::WordRight, Binding::Delete),
-        _ => return None,
-    };
-    if has_selection {
-        return Some(delete);
-    }
-    Some(Binding::Sequence(vec![Binding::Select(motion), delete]))
 }
 
 const POPUP_ROWS: usize = 10;

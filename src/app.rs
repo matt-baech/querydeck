@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
-use iced::widget::text_editor::{Action, Edit};
 use iced::widget::{button, center, column, container, opaque, row, scrollable, space, stack, text};
-use iced::{Alignment, Color, Element, Length, Point, Rectangle, Subscription, Task, Theme, mouse, window};
+use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
+use iced_code::{Action, Edit};
 
 use crate::complete::{self, Sources};
 
@@ -60,7 +60,7 @@ pub enum Message {
     // Query tabs
     SelectTab(u64),
     CloseTab(u64),
-    Edit(iced::widget::text_editor::Action),
+    Edit(Action),
     Run,
     Cancel,
     TabConnected(u64, String, Result<Connected, String>),
@@ -71,7 +71,6 @@ pub enum Message {
     Page(usize),
 
     // Autocomplete
-    CaretMoved(Rectangle),
     TriggerCompletion,
     CompletionMove(isize),
     /// Insert the given suggestion, or the selected one.
@@ -100,8 +99,6 @@ pub struct App {
     next_tab_id: u64,
     /// Autocomplete metadata per database, loaded on first use.
     schemas: HashMap<String, Load<Arc<SchemaInfo>>>,
-    /// Where the editor's caret is in the window.
-    caret: Option<Rectangle>,
 
     status: Status,
     settings: Settings,
@@ -152,7 +149,6 @@ impl App {
             active: 0,
             next_tab_id: 1,
             schemas: HashMap::new(),
-            caret: None,
             status: Status::Idle,
             settings: Settings::load(),
             drag: None,
@@ -436,7 +432,9 @@ impl App {
                     Action::Edit(Edit::Insert(c)) => {
                         open && (complete::is_word_char(*c) || matches!(c, '.' | '[' | '"'))
                     }
-                    Action::Edit(Edit::Backspace | Edit::Delete) => tab.completion.is_some(),
+                    Action::Edit(
+                        Edit::Backspace | Edit::Delete | Edit::DeleteWordBackward | Edit::DeleteWordForward,
+                    ) => tab.completion.is_some(),
                     _ => false,
                 };
                 let keep = matches!(action, Action::Scroll { .. });
@@ -449,7 +447,6 @@ impl App {
                     tab.completion = None;
                 }
             }
-            Message::CaretMoved(rect) => self.caret = Some(rect),
             Message::TriggerCompletion => return self.refresh_completion(true),
             Message::CompletionMove(step) => {
                 if let Some(c) = self.active_tab().and_then(|t| t.completion.as_mut()) {
@@ -756,7 +753,7 @@ impl App {
         }
         let tab = self.tabs.iter().find(|t| t.id == self.active)?;
         let c = tab.completion.as_ref()?;
-        Some(completion_popup(c, self.caret?, self.window_size, self.settings.editor_font_size))
+        Some(completion_popup(c, tab.editor.caret_bounds()?, self.window_size, self.settings.editor_font_size))
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
@@ -870,9 +867,7 @@ impl App {
 
     fn active_tab_view(&self) -> Element<'_, Message> {
         match self.tabs.iter().find(|t| t.id == self.active) {
-            Some(tab) => {
-                tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings, self.caret)
-            }
+            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings),
             None => container(
                 column![
                     style::dim(icon::file_code().size(32)),
