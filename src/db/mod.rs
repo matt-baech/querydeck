@@ -108,6 +108,9 @@ pub struct QueryOutcome {
     pub failed: bool,
     /// The session's database after the script ran (it may have run `USE`).
     pub current_database: Option<String>,
+    /// Rows changed by INSERT, UPDATE, DELETE and the like, when the driver
+    /// reports it (PostgreSQL does; tiberius drops SQL Server's counts).
+    pub rows_affected: Option<u64>,
 }
 
 /// An open connection. Cheap to clone; clones share the same session.

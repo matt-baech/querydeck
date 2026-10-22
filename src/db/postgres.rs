@@ -108,7 +108,10 @@ impl Conn {
                         outcome.messages.push(format!("({} row(s) returned){truncated}", set.rows.len()));
                         outcome.results.push(set);
                     }
-                    None => outcome.messages.push(format!("({n} row(s) affected)")),
+                    None => {
+                        outcome.messages.push(format!("({n} row(s) affected)"));
+                        *outcome.rows_affected.get_or_insert(0) += n;
+                    }
                 },
                 _ => {}
             }

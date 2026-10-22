@@ -4,6 +4,7 @@ mod connect;
 mod db;
 mod explorer;
 mod files;
+mod history;
 mod preferences;
 mod profiles;
 mod query_tab;

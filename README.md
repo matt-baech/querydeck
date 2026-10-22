@@ -14,6 +14,7 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
 - **Results grid** with multiple result sets, paging, right-aligned numbers and distinct `NULL`s, plus a Messages tab with row counts, errors and timings.
 - **Cancel** a running query on the server.
+- **Query history**: the last 25 queries from all tabs, with time, database, duration and whether they succeeded. Click one to open it in a new tab, or right-click to insert or copy it. Kept in memory only, so it's cleared when litedb closes.
 - **Saved connections**, with passwords stored in your OS keyring (KWallet / GNOME Keyring / Windows Credential Manager), never in plain text.
 - **Light and dark themes** (or follow the system), muted colours, resizable panes.
 - **Minimize to tray** on close (Windows, macOS, and Linux desktops with a StatusNotifierItem tray, such as KDE Plasma).

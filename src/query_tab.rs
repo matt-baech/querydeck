@@ -10,6 +10,7 @@ use iced_code::{Binding, LineEnding, code_editor};
 use crate::app::{Drag, Message, shortcut};
 use crate::complete::{Completion, Kind};
 use crate::db::{self, Connection, QueryOutcome};
+use crate::history::History;
 use crate::settings::Settings;
 use crate::style::{self, icon};
 
@@ -37,6 +38,7 @@ impl FindBar {
 pub enum ResultsPane {
     Grid,
     Messages,
+    History,
 }
 
 pub struct QueryTab {
@@ -147,6 +149,7 @@ impl QueryTab {
         connected: bool,
         highlighter: iced::highlighter::Theme,
         settings: &Settings,
+        history: &'a History,
     ) -> Element<'a, Message> {
         let run: Element<'_, Message> = if self.running.is_some() {
             style::tip(
@@ -208,7 +211,7 @@ impl QueryTab {
         if let Some(find) = &self.find {
             layout = layout.push(self.find_view(find)).push(horizontal_divider());
         }
-        layout.push(editor).push(splitter(Drag::Editor)).push(self.results_view(settings.page_size)).into()
+        layout.push(editor).push(splitter(Drag::Editor)).push(self.results_view(settings.page_size, history)).into()
     }
 
     fn find_view<'a>(&'a self, find: &'a FindBar) -> Element<'a, Message> {
@@ -290,14 +293,8 @@ impl QueryTab {
         container(bar).padding([style::S1, style::S2]).into()
     }
 
-    fn results_view(&self, page_size: usize) -> Element<'_, Message> {
-        let Some(outcome) = &self.outcome else {
-            return container(style::dim(text("Run a query to see results here.").size(style::BODY)))
-                .center(Length::Fill)
-                .into();
-        };
-
-        let tab = |label: String, pane: ResultsPane| -> Element<'_, Message> {
+    fn results_view<'a>(&'a self, page_size: usize, history: &'a History) -> Element<'a, Message> {
+        let tab = |label: String, pane: ResultsPane| -> Element<'a, Message> {
             let active = self.pane == pane;
             let label = text(label).size(style::SMALL).font(style::UI_BOLD);
             let label = if active { label } else { style::dim(label) };
@@ -315,11 +312,19 @@ impl QueryTab {
             .width(Length::Shrink)
             .into()
         };
-        let mut tabs = row![tab("RESULTS".into(), ResultsPane::Grid), tab("MESSAGES".into(), ResultsPane::Messages)]
-            .spacing(style::S1)
-            .align_y(Alignment::End);
+        let mut tabs = row![
+            tab("RESULTS".into(), ResultsPane::Grid),
+            tab("MESSAGES".into(), ResultsPane::Messages),
+            tab("HISTORY".into(), ResultsPane::History),
+        ]
+        .spacing(style::S1)
+        .align_y(Alignment::End);
 
-        if self.pane == ResultsPane::Grid && outcome.results.len() > 1 {
+        let outcome = self.outcome.as_deref();
+        if self.pane == ResultsPane::Grid
+            && let Some(outcome) = outcome
+            && outcome.results.len() > 1
+        {
             tabs = tabs.push(space().width(style::S4));
             for i in 0..outcome.results.len() {
                 tabs = tabs.push(
@@ -331,8 +336,19 @@ impl QueryTab {
             }
         }
 
-        let body: Element<'_, Message> = match self.pane {
-            ResultsPane::Messages => {
+        if self.pane == ResultsPane::History && !history.is_empty() {
+            tabs = tabs.push(space().width(Length::Fill)).push(style::tip(
+                style::tool_button(icon::clear_all().size(style::ICON), None, Some(Message::ClearHistory)),
+                "Clear history",
+            ));
+        }
+
+        let body: Element<'a, Message> = match (self.pane, outcome) {
+            (ResultsPane::History, _) => history.view(),
+            (_, None) => container(style::dim(text("Run a query to see results here.").size(style::BODY)))
+                .center(Length::Fill)
+                .into(),
+            (ResultsPane::Messages, Some(outcome)) => {
                 let mut list = column![].spacing(style::S1).padding([style::S2, style::S3]);
                 for m in &outcome.messages {
                     let line = text(m).font(style::MONO_FONT).size(style::BODY);
@@ -347,7 +363,7 @@ impl QueryTab {
                 ));
                 scrollable(list).width(Length::Fill).height(Length::Fill).into()
             }
-            ResultsPane::Grid => match outcome.results.get(self.result_index) {
+            (ResultsPane::Grid, Some(outcome)) => match outcome.results.get(self.result_index) {
                 None => container(style::dim(text("The query returned no result sets.").size(style::BODY)))
                     .center(Length::Fill)
                     .into(),

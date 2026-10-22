@@ -18,6 +18,7 @@ use crate::db::catalog::{self, DbObject, SchemaInfo};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Load, Request, context_menu};
 use crate::files;
+use crate::history::{History, Rows, RunState};
 use crate::preferences::{self, TrayStatus};
 use crate::query_tab::{FindBar, QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
@@ -70,6 +71,12 @@ pub enum Message {
     FindPrevious,
     Replace,
     ReplaceAll,
+
+    // Query history
+    OpenHistory(u64),
+    InsertHistory(u64),
+    CopyHistory(u64),
+    ClearHistory,
 
     // Object Explorer
     ToggleSidebar,
@@ -153,6 +160,8 @@ pub struct App {
     /// The main window, or `None` while litedb sits in the tray.
     window: Option<window::Id>,
     window_size: iced::Size,
+    /// The last queries run, in memory only.
+    history: History,
     /// Held modifier keys, for Shift+Enter in the find box.
     modifiers: keyboard::Modifiers,
     /// Light or dark, as the desktop currently prefers.
@@ -205,6 +214,7 @@ impl App {
             window: None,
             window_size: iced::Size::ZERO,
             modifiers: keyboard::Modifiers::default(),
+            history: History::default(),
             system_mode: Mode::Dark,
         };
         app.open_tab(None, "", None);
@@ -431,6 +441,7 @@ impl App {
             return Task::none();
         };
         let mut tab = self.tabs.remove(pos);
+        self.history.finish(id, RunState::Cancelled);
         let close = close_conn(tab.take_connection());
         if self.active == id && !self.tabs.is_empty() {
             self.active = self.tabs[pos.min(self.tabs.len() - 1)].id;
@@ -767,6 +778,33 @@ impl App {
             }
             Message::ConfirmCancel => self.closing = None,
             Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            Message::OpenHistory(id) => {
+                if let Some(entry) = self.history.get(id) {
+                    let (sql, database) = (entry.sql.clone(), entry.database.clone());
+                    let tab = self.open_tab(None, &sql, (!database.is_empty()).then_some(database));
+                    if let Some(tab) = self.tab(tab) {
+                        return operation::focus(tab.editor_id.clone());
+                    }
+                }
+            }
+            Message::InsertHistory(id) => {
+                let Some(sql) = self.history.get(id).map(|e| e.sql.clone()) else {
+                    return Task::none();
+                };
+                let Some(tab) = self.active_tab() else {
+                    return Task::none();
+                };
+                tab.completion = None;
+                tab.editor.perform(Action::Edit(Edit::Paste(Arc::new(sql))));
+                tab.dirty = true;
+                return operation::focus(tab.editor_id.clone());
+            }
+            Message::CopyHistory(id) => {
+                if let Some(entry) = self.history.get(id) {
+                    return iced::clipboard::write(entry.sql.clone());
+                }
+            }
+            Message::ClearHistory => self.history.clear(),
             Message::OpenFind(replace) => {
                 let Some(tab) = self.active_tab() else {
                     return Task::none();
@@ -954,6 +992,7 @@ impl App {
                 };
                 handle.abort();
                 let conn = tab.conn.clone();
+                self.history.finish(self.active, RunState::Cancelled);
                 self.status = Status::Info("Cancelling…".into());
                 if let Some(conn) = conn {
                     return Task::perform(conn.cancel(), Message::CancelSent);
@@ -980,12 +1019,29 @@ impl App {
                         if let Some(tab) = self.tab(id) {
                             tab.running = None;
                         }
+                        self.history.finish(id, RunState::Failed(None));
                         self.status = Status::Error(format!("Could not open a connection for the query: {e}"));
                     }
                 }
             }
             Message::QueryFinished(id, outcome) => {
-                let secs = outcome.elapsed.as_secs_f64();
+                let elapsed = outcome.elapsed;
+                self.history.finish(
+                    id,
+                    if outcome.failed {
+                        RunState::Failed(Some(elapsed))
+                    } else {
+                        RunState::Succeeded(
+                            elapsed,
+                            Rows {
+                                sets: outcome.results.len(),
+                                returned: outcome.results.iter().map(|r| r.rows.len()).sum(),
+                                affected: outcome.rows_affected,
+                            },
+                        )
+                    },
+                );
+                let secs = elapsed.as_secs_f64();
                 self.status = if outcome.failed {
                     Status::Error(format!("Query failed after {secs:.3}s."))
                 } else {
@@ -1043,6 +1099,7 @@ impl App {
     /// Closes the explorer's and every tab's connection.
     fn end_session(&mut self) -> Task<Message> {
         let mut conns: Vec<Connection> = self.tabs.iter_mut().filter_map(|t| t.take_connection()).collect();
+        self.history.cancel_running();
         if let Some(s) = self.session.take() {
             conns.push(s.explorer_conn);
         }
@@ -1139,6 +1196,15 @@ impl App {
         };
         tab.completion = None;
         tab.ran_ddl = changes_schema(&sql);
+        let database = match (&tab.current_db, &tab.database) {
+            (current, _) if !current.is_empty() => current.clone(),
+            (_, Some(db)) => db.clone(),
+            _ => profile.database.clone(),
+        };
+        self.history.start(id, &sql, &database);
+        let Some(tab) = self.tab(id) else {
+            return Task::none();
+        };
 
         if tab.conn.is_some() {
             return self.execute(id, sql);
@@ -1411,7 +1477,12 @@ impl App {
 
     fn active_tab_view(&self) -> Element<'_, Message> {
         match self.tabs.iter().find(|t| t.id == self.active) {
-            Some(tab) => tab.view(self.session.is_some(), style::highlighter(&self.current_theme()), &self.settings),
+            Some(tab) => tab.view(
+                self.session.is_some(),
+                style::highlighter(&self.current_theme()),
+                &self.settings,
+                &self.history,
+            ),
             None => container(
                 column![
                     style::dim(icon::file_code().size(32)),
