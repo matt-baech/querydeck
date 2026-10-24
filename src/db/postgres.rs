@@ -18,7 +18,7 @@ impl Conn {
             .port(profile.port)
             .user(&profile.user)
             .password(password)
-            .application_name("litedb")
+            .application_name("querydeck")
             .connect_timeout(Duration::from_secs(10));
         if !profile.database.trim().is_empty() {
             config.dbname(profile.database.trim());

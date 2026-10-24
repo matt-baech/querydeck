@@ -4,7 +4,9 @@
 use crate::db::Profile;
 use crate::settings::{read_json, write_json};
 
-const KEYRING_SERVICE: &str = "litedb";
+const KEYRING_SERVICE: &str = "querydeck";
+/// Where passwords were kept when querydeck was called litedb.
+const OLD_KEYRING_SERVICE: &str = "litedb";
 const FILE: &str = "connections.json";
 
 pub fn load() -> Vec<Profile> {
@@ -22,7 +24,17 @@ fn keyring_account(p: &Profile) -> String {
 }
 
 pub fn load_password(p: &Profile) -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, &keyring_account(p)).ok()?.get_password().ok()
+    let account = keyring_account(p);
+    if let Ok(password) = keyring::Entry::new(KEYRING_SERVICE, &account).ok()?.get_password() {
+        return Some(password);
+    }
+    // Saved before the rename: move it to the new name.
+    let old = keyring::Entry::new(OLD_KEYRING_SERVICE, &account).ok()?;
+    let password = old.get_password().ok()?;
+    if store_password(p, &password).is_ok() {
+        let _ = old.delete_credential();
+    }
+    Some(password)
 }
 
 pub fn store_password(p: &Profile, password: &str) -> Result<(), String> {

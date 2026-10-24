@@ -2124,34 +2124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "litedb"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "directories",
- "dispatch2",
- "futures-util",
- "iced",
- "iced_aw",
- "iced_code",
- "iced_fonts",
- "iced_grid",
- "keyring",
- "ksni",
- "rfd",
- "rust_decimal",
- "serde",
- "serde_json",
- "tiberius",
- "tokio",
- "tokio-postgres",
- "tokio-util",
- "tray-icon",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "litrs"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3163,6 +3135,34 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "querydeck"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "directories",
+ "dispatch2",
+ "futures-util",
+ "iced",
+ "iced_aw",
+ "iced_code",
+ "iced_fonts",
+ "iced_grid",
+ "keyring",
+ "ksni",
+ "rfd",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tiberius",
+ "tokio",
+ "tokio-postgres",
+ "tokio-util",
+ "tray-icon",
+ "uuid",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "quick-xml"

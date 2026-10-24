@@ -1,5 +1,5 @@
 //! The last few queries run, across all tabs. Kept in memory only, so the
-//! history is gone when litedb closes.
+//! history is gone when querydeck closes.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -149,7 +149,7 @@ impl History {
     pub fn view(&self) -> Element<'_, Message> {
         if self.entries.is_empty() {
             return style::placeholder(format!(
-                "Queries you run show up here (the last {LIMIT}, until litedb closes)."
+                "Queries you run show up here (the last {LIMIT}, until querydeck closes)."
             ));
         }
 

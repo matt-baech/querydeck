@@ -1,5 +1,5 @@
 -- Creates dbo.Persons in the `test` database and fills it with 1000 random people.
--- Run the whole script in litedb (F5). Re-running drops and recreates the table.
+-- Run the whole script in querydeck (F5). Re-running drops and recreates the table.
 
 USE test;
 GO

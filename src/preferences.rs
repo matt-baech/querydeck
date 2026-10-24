@@ -78,7 +78,7 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
         .spacing(style::S1)
         .into(),
         _ => style::dim(
-            text("litedb keeps running in the system tray. Quit from the tray icon's menu.").size(style::SMALL),
+            text("querydeck keeps running in the system tray. Quit from the tray icon's menu.").size(style::SMALL),
         )
         .into(),
     };

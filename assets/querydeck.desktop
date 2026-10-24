@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=litedb
+Name=querydeck
 GenericName=SQL Client
 Comment=Query SQL Server and PostgreSQL databases
-Exec=litedb %F
+Exec=querydeck %F
 Icon=server-database
 Terminal=false
 Categories=Development;Database;
 MimeType=application/sql;text/x-sql;
-StartupWMClass=litedb
+StartupWMClass=querydeck

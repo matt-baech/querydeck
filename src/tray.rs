@@ -78,11 +78,11 @@ mod imp {
 
     impl ksni::Tray for Tray {
         fn id(&self) -> String {
-            "litedb".into()
+            "querydeck".into()
         }
 
         fn title(&self) -> String {
-            "litedb".into()
+            "querydeck".into()
         }
 
         fn icon_name(&self) -> String {
@@ -90,7 +90,7 @@ mod imp {
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
-            ksni::ToolTip { title: "litedb".into(), description: "SQL client".into(), ..Default::default() }
+            ksni::ToolTip { title: "querydeck".into(), description: "SQL client".into(), ..Default::default() }
         }
 
         fn activate(&mut self, _x: i32, _y: i32) {
@@ -101,7 +101,7 @@ mod imp {
             use ksni::menu::StandardItem;
             vec![
                 StandardItem {
-                    label: "Show litedb".into(),
+                    label: "Show querydeck".into(),
                     icon_name: "window".into(),
                     activate: Box::new(|t: &mut Self| {
                         let _ = t.events.send(TrayEvent::Show);
@@ -215,7 +215,7 @@ mod imp {
     fn build() -> Result<TrayIcon, String> {
         let menu = Menu::new();
         menu.append_items(&[
-            &MenuItem::with_id(SHOW, "Show litedb", true, None),
+            &MenuItem::with_id(SHOW, "Show querydeck", true, None),
             &PredefinedMenuItem::separator(),
             &MenuItem::with_id(QUIT, "Quit", true, None),
         ])
@@ -223,8 +223,8 @@ mod imp {
         let (rgba, size) = super::icon::database(cfg!(target_os = "macos"));
         let icon = tray_icon::Icon::from_rgba(rgba, size, size).map_err(|e| e.to_string())?;
         TrayIconBuilder::new()
-            .with_id("litedb")
-            .with_tooltip("litedb")
+            .with_id("querydeck")
+            .with_tooltip("querydeck")
             .with_icon(icon)
             // A black glyph that macOS recolours for light/dark menu bars.
             .with_icon_as_template(cfg!(target_os = "macos"))

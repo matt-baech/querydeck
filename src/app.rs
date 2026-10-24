@@ -139,7 +139,7 @@ pub struct App {
     drag: Option<DragState>,
     settings_open: bool,
     tray: TrayStatus,
-    /// The main window, or `None` while litedb sits in the tray.
+    /// The main window, or `None` while querydeck sits in the tray.
     window: Option<window::Id>,
     window_size: iced::Size,
     /// The last queries run, in memory only.
@@ -204,7 +204,7 @@ impl App {
             app.tray = TrayStatus::Starting;
         }
         let open = app.open_window();
-        // `litedb a.sql b.sql` opens the files.
+        // `querydeck a.sql b.sql` opens the files.
         let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
         let files = if paths.is_empty() { Task::none() } else { Task::done(Message::OpenPaths(paths)) };
         (app, Task::batch([open, iced::system::theme().map(Message::SystemTheme), files]))
@@ -212,8 +212,8 @@ impl App {
 
     pub fn title(&self, _window: window::Id) -> String {
         match &self.session {
-            Some(s) => format!("litedb — {}", s.profile.display_name()),
-            None => "litedb".into(),
+            Some(s) => format!("querydeck — {}", s.profile.display_name()),
+            None => "querydeck".into(),
         }
     }
 
@@ -280,12 +280,12 @@ impl App {
             maximized: geometry.maximized,
             min_size: Some(iced::Size::new(720.0, 480.0)),
             // Wayland compositors ignore this and use the icon of the
-            // litedb.desktop entry that matches `application_id`.
+            // querydeck.desktop entry that matches `application_id`.
             icon: window::icon::from_rgba(tray::icon::window(64), 64, 64).ok(),
             // Closing is decided in `CloseRequested` (quit or go to the tray).
             exit_on_close_request: false,
             platform_specific: window::settings::PlatformSpecific {
-                application_id: "litedb".into(),
+                application_id: "querydeck".into(),
                 ..Default::default()
             },
             ..window::Settings::default()

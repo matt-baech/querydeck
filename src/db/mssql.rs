@@ -28,7 +28,7 @@ impl Conn {
         if profile.trust_cert {
             config.trust_cert();
         }
-        config.application_name("litedb");
+        config.application_name("querydeck");
 
         let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(config.get_addr()))
             .await

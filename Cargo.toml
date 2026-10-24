@@ -1,11 +1,11 @@
 [package]
-name = "litedb"
+name = "querydeck"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Lightweight desktop SQL client for SQL Server and PostgreSQL"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/matt-baech/litedb"
+repository = "https://github.com/matt-baech/querydeck"
 keywords = ["sql", "sql-server", "postgresql", "database", "client"]
 categories = ["database", "gui", "development-tools"]
 

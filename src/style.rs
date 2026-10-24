@@ -38,7 +38,7 @@ pub const S4: f32 = 16.0;
 /// Muted charcoal theme with desaturated accents.
 pub static DARK: LazyLock<Theme> = LazyLock::new(|| {
     Theme::custom(
-        "litedb Dark",
+        "querydeck Dark",
         Palette {
             background: color!(0x232427),
             text: color!(0xd2cfc8),
@@ -53,7 +53,7 @@ pub static DARK: LazyLock<Theme> = LazyLock::new(|| {
 /// Warm cream theme; easier on the eyes than pure white.
 pub static LIGHT: LazyLock<Theme> = LazyLock::new(|| {
     Theme::custom(
-        "litedb Light",
+        "querydeck Light",
         Palette {
             background: color!(0xf3eee2),
             text: color!(0x34302a),

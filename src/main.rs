@@ -13,6 +13,7 @@ mod style;
 mod tray;
 
 fn main() -> iced::Result {
+    settings::migrate_from_litedb();
     // A daemon keeps running with no windows open, which is what lets the
     // app live in the system tray: on Wayland a window can't be hidden, only
     // closed and opened again.

@@ -53,7 +53,7 @@ pub struct Settings {
     pub complete_while_typing: bool,
     /// Closing the window hides it to the system tray instead of quitting.
     pub minimize_to_tray: bool,
-    /// Where the window was when litedb last closed.
+    /// Where the window was when querydeck last closed.
     pub window: WindowGeometry,
 }
 
@@ -103,7 +103,25 @@ impl Settings {
 }
 
 pub fn config_file(name: &str) -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "litedb").map(|d| d.config_dir().join(name))
+    config_dir("querydeck").map(|dir| dir.join(name))
+}
+
+fn config_dir(app: &str) -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", app).map(|d| d.config_dir().to_path_buf())
+}
+
+/// querydeck used to be called litedb: moves its settings and saved
+/// connections over on first start.
+pub fn migrate_from_litedb() {
+    if let (Some(old), Some(new)) = (config_dir("litedb"), config_dir("querydeck"))
+        && old.is_dir()
+        && !new.exists()
+    {
+        if let Some(parent) = new.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::rename(&old, &new);
+    }
 }
 
 pub fn read_json<T: for<'de> Deserialize<'de>>(name: &str) -> Option<T> {

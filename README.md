@@ -1,8 +1,8 @@
-# litedb
+# querydeck
 
 A lightweight, native desktop SQL client for **SQL Server** and **PostgreSQL**, written in Rust.
 
-litedb aims to cover the everyday 90% of what you'd open SQL Server Management Studio or Azure Data Studio for (browse a server, write queries, look at results) in a fast, single-binary app that starts instantly.
+querydeck aims to cover the everyday 90% of what you'd open SQL Server Management Studio or Azure Data Studio for (browse a server, write queries, look at results) in a fast, single-binary app that starts instantly.
 
 ## Features
 
@@ -10,11 +10,11 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **Right-click actions**: *Select Top 1000 Rows*, *Script* (view/procedure/function/trigger source), *New Query* in a given database, *Refresh*.
 - **Query tabs**, each with its own connection, so a long query never blocks the tree and a `USE` in one tab doesn't affect another.
 - **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent, comment toggling, and find and replace with match case, whole word and replace all (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
-- **Open and save `.sql` files** (also by dragging them onto the window, or `litedb file.sql`). Files saved by SSMS in UTF-16 open fine. Unsaved tabs show a dot, and closing or quitting asks before discarding changes.
+- **Open and save `.sql` files** (also by dragging them onto the window, or `querydeck file.sql`). Files saved by SSMS in UTF-16 open fine. Unsaved tabs show a dot, and closing or quitting asks before discarding changes.
 - **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
 - **Results grid** (built on [iced_grid](https://github.com/matt-baech/iced_grid)) that draws only the rows in view, so even 100,000 rows scroll smoothly. Select cells, rows or columns with click, drag, Shift+click or the arrow keys; `Ctrl+C` copies them tab-separated (pastes straight into Excel), `Ctrl+Shift+C` with headers. Drag a header border to resize a column, double-click it to fit. Right-click for Copy, Copy with Headers, Select All and Export to CSV. Numbers are right-aligned and `NULL`s stand out. Multiple result sets, plus a Messages tab with row counts, errors and timings.
 - **Cancel** a running query on the server.
-- **Query history**: the last 25 queries from all tabs, with time, database, duration and whether they succeeded. Click one to open it in a new tab, or right-click to insert or copy it. Kept in memory only, so it's cleared when litedb closes.
+- **Query history**: the last 25 queries from all tabs, with time, database, duration and whether they succeeded. Click one to open it in a new tab, or right-click to insert or copy it. Kept in memory only, so it's cleared when querydeck closes.
 - **Saved connections**, with passwords stored in your OS keyring (KWallet / GNOME Keyring / Windows Credential Manager), never in plain text.
 - **Light and dark themes** (or follow the system), muted colours, resizable panes.
 - **Minimize to tray** on close (Windows, macOS, and Linux desktops with a StatusNotifierItem tray, such as KDE Plasma).
@@ -32,34 +32,34 @@ Install Rust 1.88 or newer:
 
 ### 2. System requirements
 
-- **Graphics:** a GPU driver with Vulkan, Metal or DirectX 12 support. litedb renders with `wgpu` and falls back to a software renderer if needed.
+- **Graphics:** a GPU driver with Vulkan, Metal or DirectX 12 support. querydeck renders with `wgpu` and falls back to a software renderer if needed.
 - **Linux:** a Wayland or X11 desktop. To remember passwords, a Secret Service provider (KWallet on KDE, GNOME Keyring on GNOME). For minimize-to-tray, a StatusNotifierItem tray (built into KDE Plasma; GNOME needs the *AppIndicator* extension).
 - **Windows / macOS:** should build and run, but haven't been tested on real machines yet. The tray icon sits in the notification area (Windows) or the menu bar (macOS); left-click shows or hides the window, right-click opens its menu.
 
 ### 3. Build and install
 
-litedb uses the editor widget from [iced_code](https://github.com/matt-baech/iced_code) and the results grid from [iced_grid](https://github.com/matt-baech/iced_grid), which must be cloned next to it:
+querydeck uses the editor widget from [iced_code](https://github.com/matt-baech/iced_code) and the results grid from [iced_grid](https://github.com/matt-baech/iced_grid), which must be cloned next to it:
 
 ```bash
 git clone https://github.com/matt-baech/iced_code.git
 git clone https://github.com/matt-baech/iced_grid.git
-git clone https://github.com/matt-baech/litedb.git
-cd litedb
+git clone https://github.com/matt-baech/querydeck.git
+cd querydeck
 cargo install --path .
 ```
 
-This builds an optimized binary and copies it to `~/.cargo/bin/litedb`. Make sure `~/.cargo/bin` is on your `PATH`, then start it with:
+This builds an optimized binary and copies it to `~/.cargo/bin/querydeck`. Make sure `~/.cargo/bin` is on your `PATH`, then start it with:
 
 ```bash
-litedb
+querydeck
 ```
 
-To build without installing, run `cargo build --release`. The binary is then at `target/release/litedb` (about 30 MB).
+To build without installing, run `cargo build --release`. The binary is then at `target/release/querydeck` (about 30 MB).
 
 ### Optional: add it to your application menu (Linux)
 
 ```bash
-cp assets/litedb.desktop ~/.local/share/applications/
+cp assets/querydeck.desktop ~/.local/share/applications/
 ```
 
 This also gives the window its icon on Wayland, where the desktop picks the icon from this entry rather than from the app. It uses the `server-database` icon from your icon theme, the same one the tray shows.
@@ -67,9 +67,9 @@ This also gives the window its icon on Wayland, where the desktop picks the icon
 ### Uninstall
 
 ```bash
-cargo uninstall litedb
-rm -rf ~/.config/litedb
-rm -f ~/.local/share/applications/litedb.desktop
+cargo uninstall querydeck
+rm -rf ~/.config/querydeck
+rm -f ~/.local/share/applications/querydeck.desktop
 ```
 
 ## Usage
@@ -123,11 +123,11 @@ Settings and saved connections are stored as JSON in your config directory:
 
 | OS | Location |
 |---|---|
-| Linux | `~/.config/litedb/` |
-| Windows | `%APPDATA%\litedb\config\` |
-| macOS | `~/Library/Application Support/litedb/` |
+| Linux | `~/.config/querydeck/` |
+| Windows | `%APPDATA%\querydeck\config\` |
+| macOS | `~/Library/Application Support/querydeck/` |
 
-Passwords are never written there. They live in the OS keyring under the service name `litedb`.
+Passwords are never written there. They live in the OS keyring under the service name `querydeck`.
 
 ## Limitations
 
@@ -136,7 +136,7 @@ Passwords are never written there. They live in the OS keyring under the service
 - SQL Server: SQL logins only (no Windows Integrated Authentication). Only table triggers are listed.
 - A query keeps at most 100,000 rows per result set.
 - Autocomplete doesn't know CTE names, subquery aliases or tables in other databases (`otherdb.dbo.table`).
-- macOS: while litedb is in the tray, clicking its Dock icon doesn't bring the window back; use the menu-bar icon.
+- macOS: while querydeck is in the tray, clicking its Dock icon doesn't bring the window back; use the menu-bar icon.
 
 ## Built with
 
