@@ -48,19 +48,23 @@ cd querydeck
 cargo install --path .
 ```
 
-This builds an optimized binary and copies it to `~/.cargo/bin/querydeck`. Make sure `~/.cargo/bin` is on your `PATH`, then start it with:
+This builds an optimized binary and copies it to `~/.cargo/bin/querydeck` (`%USERPROFILE%\.cargo\bin\querydeck.exe` on Windows). rustup puts that folder on your `PATH`; if you installed Rust another way (for example from your Linux distribution's packages), add it yourself, e.g. `fish_add_path ~/.cargo/bin` in fish or `export PATH="$HOME/.cargo/bin:$PATH"` in `~/.bashrc`. Then start it with:
 
 ```bash
 querydeck
 ```
+
+`cargo install` doesn't add a Start menu or app-menu entry; see below for Linux. On Windows, right-click `querydeck.exe` in that folder and choose *Pin to Start*.
 
 To build without installing, run `cargo build --release`. The binary is then at `target/release/querydeck` (about 30 MB).
 
 ### Optional: add it to your application menu (Linux)
 
 ```bash
-cp assets/querydeck.desktop ~/.local/share/applications/
+sed "s|^Exec=querydeck|Exec=$HOME/.cargo/bin/querydeck|" assets/querydeck.desktop > ~/.local/share/applications/querydeck.desktop
 ```
+
+This writes the full path to the binary into the entry, because the desktop's app launcher doesn't see `PATH` changes made in your shell's config.
 
 This also gives the window its icon on Wayland, where the desktop picks the icon from this entry rather than from the app. It uses the `server-database` icon from your icon theme, the same one the tray shows.
 
