@@ -1,6 +1,6 @@
 //! The "Connect to Server" dialog: saved profiles plus an editable form.
 
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, space, text, text_input};
+use iced::widget::{button, column, container, pick_list, row, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Length, Theme};
 
 use crate::app::Message;
@@ -209,14 +209,7 @@ impl ConnectForm {
                 row![
                     style::section_title("Saved"),
                     space().width(Length::Fill),
-                    style::tip(
-                        style::tool_button(
-                            icon::add().size(style::ICON),
-                            None,
-                            Some(Message::Form(FormMsg::NewProfile))
-                        ),
-                        "New connection",
-                    ),
+                    style::icon_button(icon::add(), Message::Form(FormMsg::NewProfile), "New connection"),
                 ]
                 .align_y(Alignment::Center),
                 scrollable(saved).height(Length::Fill),
@@ -267,22 +260,13 @@ impl ConnectForm {
             field("Database", input("", &f.database).on_input(form_msg(FormMsg::Database)).into()),
         ]
         .spacing(style::S3);
-        let mut options = column![
-            checkbox(self.save_password)
-                .label("Save password in keyring")
-                .on_toggle(|v| Message::Form(FormMsg::SavePassword(v)))
-                .size(14)
-                .text_size(style::BODY)
-        ]
+        let mut options = column![style::check(self.save_password, "Save password in keyring", |v| Message::Form(
+            FormMsg::SavePassword(v)
+        ))]
         .spacing(style::S2);
         if f.driver == Driver::SqlServer {
-            options = options.push(
-                checkbox(f.trust_cert)
-                    .label("Trust server certificate")
-                    .on_toggle(|v| Message::Form(FormMsg::TrustCert(v)))
-                    .size(14)
-                    .text_size(style::BODY),
-            );
+            options = options
+                .push(style::check(f.trust_cert, "Trust server certificate", |v| Message::Form(FormMsg::TrustCert(v))));
         }
         form = form.push(container(options).padding([style::S1, 0.0]));
 
@@ -294,13 +278,8 @@ impl ConnectForm {
             None => space().into(),
         };
 
-        let dialog_button =
-            |label: &'static str| button(text(label).size(style::BODY)).padding([style::S1 + 2.0, style::S3]);
-        let connect_btn = if self.connecting {
-            dialog_button("Connecting…").style(style::success)
-        } else {
-            dialog_button("Connect").style(style::success).on_press(Message::Connect)
-        };
+        let connect_btn = style::text_button(if self.connecting { "Connecting…" } else { "Connect" }, style::success)
+            .on_press_maybe((!self.connecting).then_some(Message::Connect));
         let delete_btn = style::tip(
             style::tool_button(
                 style::icon_colored(icon::trash(), Some(style::danger_color)).size(22),
@@ -313,7 +292,7 @@ impl ConnectForm {
             delete_btn,
             notice,
             space().width(Length::Fill),
-            dialog_button("Save").style(style::neutral).on_press(Message::Form(FormMsg::Save)),
+            style::text_button("Save", style::neutral).on_press(Message::Form(FormMsg::Save)),
             connect_btn,
         ]
         .spacing(style::S2)
@@ -322,10 +301,7 @@ impl ConnectForm {
         let title = row![
             text("Connect to Server").size(style::TITLE).font(style::UI_BOLD),
             space().width(Length::Fill),
-            style::tip(
-                style::tool_button(icon::close().size(style::ICON), None, Some(Message::CloseDialog)),
-                "Close (Esc)"
-            ),
+            style::icon_button(icon::close(), Message::CloseDialog, "Close (Esc)"),
         ]
         .align_y(Alignment::Center);
 

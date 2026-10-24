@@ -41,26 +41,20 @@ impl fmt::Display for ThemeChoice {
     }
 }
 
+/// Missing fields (from older versions) take their defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
-    #[serde(default)]
     pub theme: ThemeChoice,
-    #[serde(default = "default_sidebar_width")]
     pub sidebar_width: f32,
-    #[serde(default = "default_editor_height")]
     pub editor_height: f32,
-    #[serde(default = "default_editor_font_size")]
     pub editor_font_size: f32,
-    #[serde(default = "default_page_size")]
     pub page_size: usize,
     /// Show autocomplete suggestions as you type, not only on Ctrl+Space.
-    #[serde(default)]
     pub complete_while_typing: bool,
     /// Closing the window hides it to the system tray instead of quitting.
-    #[serde(default)]
     pub minimize_to_tray: bool,
     /// Where the window was when litedb last closed.
-    #[serde(default)]
     pub window: WindowGeometry,
 }
 
@@ -68,6 +62,7 @@ pub struct Settings {
 /// was maximized. Wayland doesn't tell apps where their window is, so there
 /// the position stays unset and the desktop places the window.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WindowGeometry {
     pub width: f32,
     pub height: f32,
@@ -89,31 +84,15 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::default(),
-            sidebar_width: default_sidebar_width(),
-            editor_height: default_editor_height(),
-            editor_font_size: default_editor_font_size(),
-            page_size: default_page_size(),
+            sidebar_width: 300.0,
+            editor_height: 280.0,
+            editor_font_size: 13.0,
+            page_size: 500,
             complete_while_typing: false,
             minimize_to_tray: false,
             window: WindowGeometry::default(),
         }
     }
-}
-
-fn default_sidebar_width() -> f32 {
-    300.0
-}
-
-fn default_editor_height() -> f32 {
-    280.0
-}
-
-fn default_editor_font_size() -> f32 {
-    13.0
-}
-
-fn default_page_size() -> usize {
-    500
 }
 
 impl Settings {
@@ -142,4 +121,17 @@ pub fn write_json<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("Could not write {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_fields_take_defaults() {
+        let s: Settings = serde_json::from_str(r#"{"theme": "Dark", "window": {"width": 900.0}}"#).unwrap();
+        assert_eq!(s.theme, ThemeChoice::Dark);
+        assert_eq!(s.page_size, 500);
+        assert_eq!((s.window.width, s.window.height), (900.0, 800.0));
+    }
 }

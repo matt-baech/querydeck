@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures_util::{StreamExt, pin_mut};
 use tokio_postgres::{CancelToken, Client, NoTls, SimpleQueryMessage};
 
-use super::{MAX_ROWS, NULL, Profile, QueryOutcome, ResultSet};
+use super::{MAX_ROWS, NULL, Profile, QueryOutcome, ResultSet, rows_message};
 
 pub struct Conn {
     client: Client,
@@ -34,14 +34,6 @@ impl Conn {
         Ok(Self { client, cancel })
     }
 
-    pub async fn server_version(&self) -> Option<String> {
-        self.scalar("SELECT version()").await
-    }
-
-    pub async fn current_database(&self) -> Option<String> {
-        self.scalar("SELECT current_database()").await
-    }
-
     /// Rows of the first result set of `sql`.
     pub async fn query_rows(&self, sql: &str) -> Result<Vec<Vec<String>>, String> {
         let msgs = self.client.simple_query(sql).await.map_err(|e| describe(&e))?;
@@ -54,15 +46,6 @@ impl Conn {
                 _ => None,
             })
             .collect())
-    }
-
-    /// First column of the first row, or `None` on error or no rows.
-    async fn scalar(&self, sql: &str) -> Option<String> {
-        let msgs = self.client.simple_query(sql).await.ok()?;
-        msgs.into_iter().find_map(|m| match m {
-            SimpleQueryMessage::Row(r) => r.get(0).map(str::to_string),
-            _ => None,
-        })
     }
 
     pub async fn run(&self, sql: &str) -> QueryOutcome {
@@ -103,9 +86,7 @@ impl Conn {
                 }
                 SimpleQueryMessage::CommandComplete(n) => match open.take() {
                     Some(set) => {
-                        let truncated =
-                            if set.truncated { format!(" (only the first {MAX_ROWS} kept)") } else { String::new() };
-                        outcome.messages.push(format!("({} row(s) returned){truncated}", set.rows.len()));
+                        outcome.messages.push(rows_message("", &set));
                         outcome.results.push(set);
                     }
                     None => {

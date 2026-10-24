@@ -3,9 +3,11 @@
 use std::sync::Arc;
 
 use iced::keyboard::{Key, key::Named};
-use iced::widget::{Id, button, column, container, mouse_area, pin, row, scrollable, space, table, text, text_input};
-use iced::{Alignment, Element, Font, Length, Rectangle, Size, mouse, task};
-use iced_code::{Binding, LineEnding, code_editor};
+use iced::widget::{
+    Id, button, column, container, mouse_area, operation, pin, row, scrollable, space, table, text, text_input,
+};
+use iced::{Alignment, Element, Font, Length, Rectangle, Size, Task, mouse, task};
+use iced_code::{Action, Binding, Edit, LineEnding, code_editor};
 
 use crate::app::{Drag, Message, shortcut};
 use crate::complete::{Completion, Kind};
@@ -32,6 +34,31 @@ impl FindBar {
     pub fn search(&self) -> iced_code::Search {
         iced_code::Search { text: self.query.clone(), match_case: self.match_case, whole_word: self.whole_word }
     }
+}
+
+/// Messages handled by the active tab on its own.
+#[derive(Debug, Clone)]
+pub enum TabMsg {
+    /// Opens the find bar; `true` also shows the replace row.
+    OpenFind(bool),
+    CloseFind,
+    FindInput(String),
+    ReplaceInput(String),
+    ToggleMatchCase,
+    ToggleWholeWord,
+    ToggleReplace,
+    /// Enter in the find box: next match, or previous with Shift.
+    FindSubmit,
+    FindNext,
+    FindPrevious,
+    Replace,
+    ShowPane(ResultsPane),
+    SelectResult(usize),
+    Page(usize),
+    CompletionMove(isize),
+    /// Insert the given suggestion, or the selected one.
+    AcceptCompletion(Option<usize>),
+    CloseCompletion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +124,104 @@ impl QueryTab {
             result_index: 0,
             page: 0,
         }
+    }
+
+    /// `shift` is whether Shift is held, for Shift+Enter in the find box.
+    pub fn update(&mut self, msg: TabMsg, shift: bool) -> Task<Message> {
+        match msg {
+            TabMsg::OpenFind(replace) => return self.open_find(replace),
+            TabMsg::CloseFind if self.find.take().is_some() => {
+                self.editor.set_search(None);
+                return operation::focus(self.editor_id.clone());
+            }
+            TabMsg::CloseFind => {}
+            TabMsg::FindInput(query) => self.change_find(|f| f.query = query),
+            TabMsg::ToggleMatchCase => self.change_find(|f| f.match_case = !f.match_case),
+            TabMsg::ToggleWholeWord => self.change_find(|f| f.whole_word = !f.whole_word),
+            TabMsg::ReplaceInput(replacement) => {
+                if let Some(find) = &mut self.find {
+                    find.replacement = replacement;
+                }
+            }
+            TabMsg::ToggleReplace => {
+                if let Some(find) = &mut self.find {
+                    find.replace = !find.replace;
+                    return operation::focus(if find.replace { &self.replace_id } else { &self.find_id }.clone());
+                }
+            }
+            TabMsg::FindSubmit | TabMsg::FindNext | TabMsg::FindPrevious if self.find.is_none() => {
+                return self.open_find(false);
+            }
+            TabMsg::FindSubmit if shift => _ = self.editor.find_previous(),
+            TabMsg::FindSubmit | TabMsg::FindNext => _ = self.editor.find_next(),
+            TabMsg::FindPrevious => _ = self.editor.find_previous(),
+            TabMsg::Replace => {
+                if let Some(find) = &self.find {
+                    self.dirty |= self.editor.replace(&find.replacement);
+                }
+            }
+            TabMsg::ShowPane(pane) => self.pane = pane,
+            TabMsg::SelectResult(i) => (self.result_index, self.page) = (i, 0),
+            TabMsg::Page(page) => self.page = page,
+            TabMsg::CompletionMove(step) => {
+                if let Some(c) = &mut self.completion {
+                    c.select_next(step);
+                }
+            }
+            TabMsg::AcceptCompletion(index) => {
+                let Some(c) = self.completion.take() else {
+                    return Task::none();
+                };
+                let Some(item) = c.items.get(index.unwrap_or(c.selected)) else {
+                    return Task::none();
+                };
+                for _ in 0..c.replace {
+                    self.editor.perform(Action::Edit(Edit::Backspace));
+                }
+                // Clicking the popup took focus away from the editor.
+                return self.paste(item.insert.clone());
+            }
+            TabMsg::CloseCompletion => self.completion = None,
+        }
+        Task::none()
+    }
+
+    /// Opens the find bar, searching for the selected text like most editors.
+    fn open_find(&mut self, replace: bool) -> Task<Message> {
+        self.completion = None;
+        let find = self.find.get_or_insert_with(FindBar::default);
+        find.replace = replace;
+        if let Some(selected) = self.editor.selection().filter(|s| !s.is_empty() && !s.contains('\n')) {
+            find.query = selected;
+        }
+        self.editor.set_search(Some(find.search()));
+        let id = if replace && !find.query.is_empty() { &self.replace_id } else { &self.find_id };
+        Task::batch([operation::focus(id.clone()), operation::select_all(id.clone())])
+    }
+
+    /// Changes the find bar, then searches again from the cursor so the
+    /// selection follows what's typed.
+    fn change_find(&mut self, change: impl FnOnce(&mut FindBar)) {
+        if let Some(find) = &mut self.find {
+            change(find);
+            self.editor.set_search(Some(find.search()));
+            let _ = self.editor.find_from_cursor();
+        }
+    }
+
+    /// Replaces every match; returns how many, if the find bar is open.
+    pub fn replace_all(&mut self) -> Option<usize> {
+        let count = self.editor.replace_all(&self.find.as_ref()?.replacement);
+        self.dirty |= count > 0;
+        Some(count)
+    }
+
+    /// Inserts text at the cursor and gives the editor focus.
+    pub fn paste(&mut self, text: String) -> Task<Message> {
+        self.completion = None;
+        self.editor.perform(Action::Edit(Edit::Paste(Arc::new(text))));
+        self.dirty = true;
+        operation::focus(self.editor_id.clone())
     }
 
     /// The selected text if any, otherwise the whole script.
@@ -173,8 +298,7 @@ impl QueryTab {
             .into()
         };
         let db_label = if self.current_db.is_empty() { "default database" } else { self.current_db.as_str() };
-        let save =
-            style::tip(style::tool_button(icon::save().size(style::ICON), None, Some(Message::Save)), "Save (Ctrl+S)");
+        let save = style::icon_button(icon::save(), Message::Save, "Save (Ctrl+S)");
         let toolbar = row![
             run,
             save,
@@ -232,9 +356,6 @@ impl QueryTab {
                 label,
             )
         };
-        let tool = |glyph: text::Text<'a>, msg: Option<Message>, label: &'a str| {
-            style::tip(style::tool_button(glyph.size(style::ICON), None, msg), label)
-        };
 
         let has_query = !find.query.is_empty();
         let count = self.editor.match_count();
@@ -248,21 +369,29 @@ impl QueryTab {
         let chevron = if find.replace { icon::chevron_down() } else { icon::chevron_right() };
         let find_row = row![
             input(&self.find_id, "Find", &find.query)
-                .on_input(Message::FindInput)
-                .on_submit(Message::FindSubmit)
+                .on_input(|s| Message::Tab(TabMsg::FindInput(s)))
+                .on_submit(Message::Tab(TabMsg::FindSubmit))
                 .width(INPUT_WIDTH),
-            toggle(icon::case_sensitive(), find.match_case, Message::ToggleMatchCase, "Match case"),
-            toggle(icon::whole_word(), find.whole_word, Message::ToggleWholeWord, "Whole word"),
+            toggle(icon::case_sensitive(), find.match_case, Message::Tab(TabMsg::ToggleMatchCase), "Match case"),
+            toggle(icon::whole_word(), find.whole_word, Message::Tab(TabMsg::ToggleWholeWord), "Whole word"),
             style::dim(text(summary).size(style::SMALL)).width(80),
-            tool(icon::arrow_up(), (count > 0).then_some(Message::FindPrevious), "Previous match (Shift+F3)"),
-            tool(icon::arrow_down(), (count > 0).then_some(Message::FindNext), "Next match (F3)"),
+            style::icon_button(
+                icon::arrow_up(),
+                (count > 0).then_some(Message::Tab(TabMsg::FindPrevious)),
+                "Previous match (Shift+F3)"
+            ),
+            style::icon_button(
+                icon::arrow_down(),
+                (count > 0).then_some(Message::Tab(TabMsg::FindNext)),
+                "Next match (F3)"
+            ),
             space().width(Length::Fill),
-            tool(icon::close(), Some(Message::CloseFind), "Close (Esc)"),
+            style::icon_button(icon::close(), Some(Message::Tab(TabMsg::CloseFind)), "Close (Esc)"),
         ]
         .spacing(style::S1)
         .align_y(Alignment::Center);
         let find_row = row![
-            tool(chevron, Some(Message::ToggleReplace), "Toggle replace (Ctrl+H)"),
+            style::icon_button(chevron, Some(Message::Tab(TabMsg::ToggleReplace)), "Toggle replace (Ctrl+H)"),
             container(find_row).width(Length::Fill)
         ]
         .spacing(style::S1)
@@ -280,10 +409,10 @@ impl QueryTab {
                 row![
                     space().width(26),
                     input(&self.replace_id, "Replace", &find.replacement)
-                        .on_input(Message::ReplaceInput)
-                        .on_submit(Message::Replace)
+                        .on_input(|s| Message::Tab(TabMsg::ReplaceInput(s)))
+                        .on_submit(Message::Tab(TabMsg::Replace))
                         .width(INPUT_WIDTH),
-                    action("Replace", Message::Replace),
+                    action("Replace", Message::Tab(TabMsg::Replace)),
                     action("Replace All", Message::ReplaceAll),
                 ]
                 .spacing(style::S1)
@@ -302,7 +431,7 @@ impl QueryTab {
                 button(label)
                     .padding([style::S1 + 2.0, style::S2])
                     .style(style::flat)
-                    .on_press(Message::ShowPane(pane)),
+                    .on_press(Message::Tab(TabMsg::ShowPane(pane))),
                 container(space()).height(2).width(Length::Fill).style(if active {
                     style::underline
                 } else {
@@ -331,23 +460,22 @@ impl QueryTab {
                     button(text(format!("{}", i + 1)).size(style::SMALL))
                         .padding([2.0, style::S2])
                         .style(if self.result_index == i { style::row_selected } else { style::flat })
-                        .on_press(Message::SelectResult(i)),
+                        .on_press(Message::Tab(TabMsg::SelectResult(i))),
                 );
             }
         }
 
         if self.pane == ResultsPane::History && !history.is_empty() {
-            tabs = tabs.push(space().width(Length::Fill)).push(style::tip(
-                style::tool_button(icon::clear_all().size(style::ICON), None, Some(Message::ClearHistory)),
+            tabs = tabs.push(space().width(Length::Fill)).push(style::icon_button(
+                icon::clear_all(),
+                Message::ClearHistory,
                 "Clear history",
             ));
         }
 
         let body: Element<'a, Message> = match (self.pane, outcome) {
             (ResultsPane::History, _) => history.view(),
-            (_, None) => container(style::dim(text("Run a query to see results here.").size(style::BODY)))
-                .center(Length::Fill)
-                .into(),
+            (_, None) => style::placeholder("Run a query to see results here."),
             (ResultsPane::Messages, Some(outcome)) => {
                 let mut list = column![].spacing(style::S1).padding([style::S2, style::S3]);
                 for m in &outcome.messages {
@@ -364,9 +492,7 @@ impl QueryTab {
                 scrollable(list).width(Length::Fill).height(Length::Fill).into()
             }
             (ResultsPane::Grid, Some(outcome)) => match outcome.results.get(self.result_index) {
-                None => container(style::dim(text("The query returned no result sets.").size(style::BODY)))
-                    .center(Length::Fill)
-                    .into(),
+                None => style::placeholder("The query returned no result sets."),
                 Some(set) => self.grid(set, page_size),
             },
         };
@@ -426,7 +552,7 @@ impl QueryTab {
             style::tool_button(
                 icon::chevron_left().size(style::ICON),
                 None,
-                (page > 0).then(|| Message::Page(page - 1))
+                (page > 0).then(|| Message::Tab(TabMsg::Page(page - 1)))
             ),
             style::dim(
                 text(format!("Rows {}–{} of {} · page {}/{}", start + 1, end, set.rows.len(), page + 1, pages))
@@ -435,7 +561,7 @@ impl QueryTab {
             style::tool_button(
                 icon::chevron_right().size(style::ICON),
                 None,
-                (page + 1 < pages).then(|| Message::Page(page + 1))
+                (page + 1 < pages).then(|| Message::Tab(TabMsg::Page(page + 1)))
             ),
         ]
         .spacing(style::S1)
@@ -453,12 +579,12 @@ fn completion_key(key: &Key, modifiers: iced::keyboard::Modifiers, popup: bool) 
         Key::Named(Named::Space) if modifiers.command() => Some(Message::TriggerCompletion),
         Key::Character(c) if modifiers.command() && c.as_str() == " " => Some(Message::TriggerCompletion),
         _ if !popup || !plain => None,
-        Key::Named(Named::ArrowDown) => Some(Message::CompletionMove(1)),
-        Key::Named(Named::ArrowUp) => Some(Message::CompletionMove(-1)),
-        Key::Named(Named::PageDown) => Some(Message::CompletionMove(POPUP_ROWS as isize)),
-        Key::Named(Named::PageUp) => Some(Message::CompletionMove(-(POPUP_ROWS as isize))),
-        Key::Named(Named::Enter | Named::Tab) => Some(Message::AcceptCompletion(None)),
-        Key::Named(Named::Escape) => Some(Message::CloseCompletion),
+        Key::Named(Named::ArrowDown) => Some(Message::Tab(TabMsg::CompletionMove(1))),
+        Key::Named(Named::ArrowUp) => Some(Message::Tab(TabMsg::CompletionMove(-1))),
+        Key::Named(Named::PageDown) => Some(Message::Tab(TabMsg::CompletionMove(POPUP_ROWS as isize))),
+        Key::Named(Named::PageUp) => Some(Message::Tab(TabMsg::CompletionMove(-(POPUP_ROWS as isize)))),
+        Key::Named(Named::Enter | Named::Tab) => Some(Message::Tab(TabMsg::AcceptCompletion(None))),
+        Key::Named(Named::Escape) => Some(Message::Tab(TabMsg::CloseCompletion)),
         _ => None,
     }
 }
@@ -490,7 +616,7 @@ pub fn completion_popup<'a>(c: &'a Completion, caret: Rectangle, window: Size, f
                 .height(POPUP_ROW_HEIGHT)
                 .padding([0.0, style::S2])
                 .style(if i == c.selected { style::row_selected } else { style::flat })
-                .on_press(Message::AcceptCompletion(Some(i))),
+                .on_press(Message::Tab(TabMsg::AcceptCompletion(Some(i)))),
         );
     }
     let rows = c.items.len().min(POPUP_ROWS) as f32;

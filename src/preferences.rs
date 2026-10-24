@@ -1,7 +1,7 @@
 //! The Settings dialog.
 
-use iced::widget::{Column, button, checkbox, column, container, pick_list, row, space, text};
-use iced::{Alignment, Element, Length, Theme};
+use iced::widget::{Column, button, column, container, pick_list, row, space, text};
+use iced::{Alignment, Element, Length};
 
 use crate::app::Message;
 use crate::settings::{EDITOR_FONT_SIZES, PAGE_SIZES, Settings, ThemeChoice};
@@ -21,10 +21,7 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
         style::icon_colored(icon::settings_gear(), None),
         text("Settings").size(style::TITLE).font(style::UI_BOLD),
         space().width(Length::Fill),
-        style::tip(
-            style::tool_button(icon::close().size(style::ICON), None, Some(Message::CloseSettings)),
-            "Close (Esc)"
-        ),
+        style::icon_button(icon::close(), Message::CloseSettings, "Close (Esc)"),
     ]
     .spacing(style::S2)
     .align_y(Alignment::Center);
@@ -73,18 +70,18 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
                     .width(90)
                     .into(),
             ),
-            checkbox(settings.complete_while_typing)
-                .label("Suggest while typing (otherwise press Ctrl+Space)")
-                .on_toggle(Message::SetCompleteWhileTyping)
-                .size(14)
-                .text_size(style::BODY),
+            style::check(
+                settings.complete_while_typing,
+                "Suggest while typing (otherwise press Ctrl+Space)",
+                Message::SetCompleteWhileTyping
+            ),
         ]
         .spacing(style::S4),
     );
 
     let tray_hint: Element<'a, Message> = match tray {
         TrayStatus::Unavailable(e) => row![
-            style::icon_colored(icon::warning(), Some(|t: &Theme| t.extended_palette().warning.base.color)).size(12),
+            style::icon_colored(icon::warning(), Some(style::warning_color)).size(12),
             style::dim(text(format!("No system tray available, so closing will quit. ({e})")).size(style::SMALL)),
         ]
         .spacing(style::S1)
@@ -97,11 +94,11 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
     let window = section(
         "Window",
         column![
-            checkbox(settings.minimize_to_tray)
-                .label("Minimize to tray when closing the window")
-                .on_toggle(Message::SetMinimizeToTray)
-                .size(14)
-                .text_size(style::BODY),
+            style::check(
+                settings.minimize_to_tray,
+                "Minimize to tray when closing the window",
+                Message::SetMinimizeToTray
+            ),
             container(tray_hint).padding(iced::Padding { left: 22.0, ..iced::Padding::ZERO }),
         ]
         .spacing(style::S1),

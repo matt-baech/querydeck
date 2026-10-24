@@ -6,7 +6,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::{MAX_ROWS, NULL, Profile, QueryOutcome, ResultSet, split_go_batches};
+use super::{MAX_ROWS, NULL, Profile, QueryOutcome, ResultSet, rows_message, split_go_batches};
 
 type SqlClient = Client<Compat<TcpStream>>;
 
@@ -39,28 +39,12 @@ impl Conn {
         Ok(Self { client: Mutex::new(Some(client)) })
     }
 
-    pub async fn server_version(&self) -> Option<String> {
-        let v = self.scalar("SELECT @@VERSION").await?;
-        Some(v.lines().next().unwrap_or_default().trim().to_string())
-    }
-
-    pub async fn current_database(&self) -> Option<String> {
-        self.scalar("SELECT DB_NAME()").await
-    }
-
     /// Rows of the first result set of `sql`.
     pub async fn query_rows(&self, sql: &str) -> Result<Vec<Vec<String>>, String> {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or("Connection is closed.")?;
         let sets = run_batch(client, sql).await?;
         Ok(sets.into_iter().next().map(|s| s.rows).unwrap_or_default())
-    }
-
-    /// First column of the first row, or `None` on error or no rows.
-    async fn scalar(&self, sql: &str) -> Option<String> {
-        let mut guard = self.client.lock().await;
-        let sets = run_batch(guard.as_mut()?, sql).await.ok()?;
-        sets.into_iter().next()?.rows.into_iter().next()?.into_iter().next()
     }
 
     pub async fn run(&self, sql: &str) -> QueryOutcome {
@@ -107,11 +91,6 @@ impl Conn {
             let _ = client.close().await;
         }
     }
-}
-
-fn rows_message(prefix: &str, set: &ResultSet) -> String {
-    let truncated = if set.truncated { format!(" (only the first {MAX_ROWS} kept)") } else { String::new() };
-    format!("{prefix}({} row(s) returned){truncated}", set.rows.len())
 }
 
 /// Runs one T-SQL batch and collects every result set it produces.

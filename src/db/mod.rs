@@ -122,11 +122,18 @@ pub enum Connection {
 
 impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Connection::SqlServer(_) => f.write_str("Connection(SqlServer)"),
-            Connection::Postgres(_) => f.write_str("Connection(Postgres)"),
-        }
+        write!(f, "Connection({})", self.driver())
     }
+}
+
+/// Runs the same code on whichever driver's connection this is.
+macro_rules! on_driver {
+    ($conn:expr, $c:ident => $body:expr) => {
+        match $conn {
+            Connection::SqlServer($c) => $body,
+            Connection::Postgres($c) => $body,
+        }
+    };
 }
 
 /// Result of a successful connect: the connection plus the server's version banner.
@@ -138,44 +145,32 @@ pub struct Connected {
 }
 
 pub async fn connect(profile: Profile, password: String) -> Result<Connected, String> {
-    match profile.driver {
-        Driver::SqlServer => {
-            let conn = mssql::Conn::connect(&profile, &password).await?;
-            let database = conn.current_database().await.unwrap_or_default();
-            let server_version = conn.server_version().await.unwrap_or_default();
-            Ok(Connected { conn: Connection::SqlServer(Arc::new(conn)), server_version, database })
-        }
-        Driver::Postgres => {
-            let conn = postgres::Conn::connect(&profile, &password).await?;
-            let database = conn.current_database().await.unwrap_or_default();
-            let server_version = conn.server_version().await.unwrap_or_default();
-            Ok(Connected { conn: Connection::Postgres(Arc::new(conn)), server_version, database })
-        }
-    }
+    let conn = match profile.driver {
+        Driver::SqlServer => Connection::SqlServer(Arc::new(mssql::Conn::connect(&profile, &password).await?)),
+        Driver::Postgres => Connection::Postgres(Arc::new(postgres::Conn::connect(&profile, &password).await?)),
+    };
+    let database = conn.current_database().await.unwrap_or_default();
+    let version_sql = match profile.driver {
+        Driver::SqlServer => "SELECT @@VERSION",
+        Driver::Postgres => "SELECT version()",
+    };
+    let version = conn.scalar(version_sql).await.unwrap_or_default();
+    Ok(Connected { database, server_version: version.lines().next().unwrap_or_default().trim().to_string(), conn })
 }
 
 impl Connection {
     pub async fn run(self, sql: String) -> QueryOutcome {
         let start = std::time::Instant::now();
-        let mut outcome = match &self {
-            Connection::SqlServer(c) => c.run(&sql).await,
-            Connection::Postgres(c) => c.run(&sql).await,
-        };
+        let mut outcome = on_driver!(&self, c => c.run(&sql).await);
         outcome.elapsed = start.elapsed();
-        outcome.current_database = match &self {
-            Connection::SqlServer(c) => c.current_database().await,
-            Connection::Postgres(c) => c.current_database().await,
-        };
+        outcome.current_database = self.current_database().await;
         outcome
     }
 
     /// Asks the server to stop the running query. Call after aborting the task
     /// that was running it.
     pub async fn cancel(self) -> Result<(), String> {
-        match &self {
-            Connection::SqlServer(c) => c.cancel().await,
-            Connection::Postgres(c) => c.cancel().await,
-        }
+        on_driver!(&self, c => c.cancel().await)
     }
 
     pub fn driver(&self) -> Driver {
@@ -186,10 +181,20 @@ impl Connection {
     }
 
     pub async fn query_rows(&self, sql: &str) -> Result<Vec<Vec<String>>, String> {
-        match self {
-            Connection::SqlServer(c) => c.query_rows(sql).await,
-            Connection::Postgres(c) => c.query_rows(sql).await,
-        }
+        on_driver!(self, c => c.query_rows(sql).await)
+    }
+
+    pub async fn current_database(&self) -> Option<String> {
+        self.scalar(match self.driver() {
+            Driver::SqlServer => "SELECT DB_NAME()",
+            Driver::Postgres => "SELECT current_database()",
+        })
+        .await
+    }
+
+    /// First column of the first row, or `None` on error or no rows.
+    async fn scalar(&self, sql: &str) -> Option<String> {
+        self.query_rows(sql).await.ok()?.into_iter().next()?.into_iter().next()
     }
 
     pub async fn close(self) {
@@ -198,6 +203,12 @@ impl Connection {
         }
         // Postgres closes when the last clone of the client is dropped.
     }
+}
+
+/// The "(n row(s) returned)" line in the Messages tab.
+fn rows_message(prefix: &str, set: &ResultSet) -> String {
+    let truncated = if set.truncated { format!(" (only the first {MAX_ROWS} kept)") } else { String::new() };
+    format!("{prefix}({} row(s) returned){truncated}", set.rows.len())
 }
 
 /// Splits a script on lines consisting solely of `GO`, like SSMS and Azure Data Studio.

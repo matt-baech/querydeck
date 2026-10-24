@@ -10,6 +10,7 @@ use iced::{Alignment, Element, Length};
 use iced_aw::ContextMenu;
 
 use crate::app::Message;
+use crate::db::QueryOutcome;
 use crate::explorer::context_menu;
 use crate::style::{self, icon};
 
@@ -56,6 +57,21 @@ impl Rows {
 
 fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
+}
+
+impl RunState {
+    /// How a query that ran to the end went.
+    pub fn of(outcome: &QueryOutcome) -> Self {
+        if outcome.failed {
+            return RunState::Failed(Some(outcome.elapsed));
+        }
+        let rows = Rows {
+            sets: outcome.results.len(),
+            returned: outcome.results.iter().map(|r| r.rows.len()).sum(),
+            affected: outcome.rows_affected,
+        };
+        RunState::Succeeded(outcome.elapsed, rows)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -132,12 +148,9 @@ impl History {
 
     pub fn view(&self) -> Element<'_, Message> {
         if self.entries.is_empty() {
-            return container(style::dim(
-                text(format!("Queries you run show up here (the last {LIMIT}, until litedb closes)."))
-                    .size(style::BODY),
-            ))
-            .center(Length::Fill)
-            .into();
+            return style::placeholder(format!(
+                "Queries you run show up here (the last {LIMIT}, until litedb closes)."
+            ));
         }
 
         let heading = |label: &'static str| style::section_title(label).wrapping(text::Wrapping::None);

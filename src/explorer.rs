@@ -157,22 +157,12 @@ impl Explorer {
             ("Refresh", Message::RefreshExplorer),
             ("Disconnect", Message::Disconnect),
         ];
-        tree = tree.push(self.node(0, NodeKey::Server, &self.server_label, icon::server(), None, true, server_menu));
+        tree = tree.push(self.node(0, NodeKey::Server, &self.server_label, icon::server(), true, server_menu));
         if !self.is_open(&NodeKey::Server) {
             return tree.into();
         }
-        let dbs_open = self.is_open(&NodeKey::Databases);
-        let folder = if dbs_open { icon::folder_opened() } else { icon::folder() };
-        tree = tree.push(self.node(
-            1,
-            NodeKey::Databases,
-            "Databases",
-            folder,
-            None,
-            true,
-            vec![("Refresh", Message::RefreshExplorer)],
-        ));
-        if !dbs_open {
+        tree = tree.push(self.folder_node(1, NodeKey::Databases, "Databases", true));
+        if !self.is_open(&NodeKey::Databases) {
             return tree.into();
         }
 
@@ -186,17 +176,8 @@ impl Explorer {
             tree = self.database(tree, 2, db);
         }
         if !self.system.is_empty() {
-            let open = self.is_open(&NodeKey::SystemDatabases);
-            tree = tree.push(self.node(
-                2,
-                NodeKey::SystemDatabases,
-                "System Databases",
-                if open { icon::folder_opened() } else { icon::folder() },
-                None,
-                true,
-                vec![("Refresh", Message::RefreshExplorer)],
-            ));
-            if open {
+            tree = tree.push(self.folder_node(2, NodeKey::SystemDatabases, "System Databases", true));
+            if self.is_open(&NodeKey::SystemDatabases) {
                 for db in dbs.iter().filter(|db| self.system.contains(*db)) {
                     tree = self.database(tree, 3, db);
                 }
@@ -210,8 +191,8 @@ impl Explorer {
         let db_key = NodeKey::Database(db.to_string());
         let db_menu =
             vec![("New Query", Message::NewQuery(Some(db.to_string()))), ("Refresh", Message::RefreshExplorer)];
-        tree =
-            tree.push(self.node(level, db_key.clone(), db, icon::database(), Some(style::accent_color), true, db_menu));
+        let glyph = style::icon_colored(icon::database(), Some(style::accent_color));
+        tree = tree.push(self.node(level, db_key.clone(), db, glyph, true, db_menu));
         if !self.is_open(&db_key) {
             return tree;
         }
@@ -236,19 +217,8 @@ impl Explorer {
     ) -> Column<'a, Message> {
         let key = NodeKey::Folder(db.to_string(), kind);
         let count = objects.iter().filter(|o| o.kind == kind).count();
-        let open = self.is_open(&key);
-        let label = format!("{}  {count}", kind.folder_name());
-        let glyph = if open { icon::folder_opened() } else { icon::folder() };
-        tree = tree.push(self.node(
-            level,
-            key.clone(),
-            &label,
-            glyph,
-            None,
-            count > 0,
-            vec![("Refresh", Message::RefreshExplorer)],
-        ));
-        if !open {
+        tree = tree.push(self.folder_node(level, key.clone(), &format!("{}  {count}", kind.folder_name()), count > 0));
+        if !self.is_open(&key) {
             return tree;
         }
         for obj in objects.iter().filter(|o| o.kind == kind) {
@@ -266,15 +236,8 @@ impl Explorer {
             }
             menu.push(("New Query", Message::NewQuery(Some(db.to_string()))));
             let (glyph, color) = object_icon(kind);
-            tree = tree.push(self.node(
-                level + 1,
-                obj_key.clone(),
-                &label,
-                glyph,
-                Some(color),
-                kind.is_selectable(),
-                menu,
-            ));
+            let glyph = style::icon_colored(glyph, Some(color));
+            tree = tree.push(self.node(level + 1, obj_key.clone(), &label, glyph, kind.is_selectable(), menu));
 
             if kind.is_selectable() && self.is_open(&obj_key) {
                 match self.columns.get(&(db.to_string(), obj.id.clone())) {
@@ -295,16 +258,20 @@ impl Explorer {
         self.expanded.contains(key)
     }
 
+    /// A folder row; right-click offers Refresh.
+    fn folder_node<'a>(&self, level: u16, key: NodeKey, label: &str, expandable: bool) -> Element<'a, Message> {
+        let glyph = if self.is_open(&key) { icon::folder_opened() } else { icon::folder() };
+        self.node(level, key, label, glyph, expandable, vec![("Refresh", Message::RefreshExplorer)])
+    }
+
     /// One tree row: chevron, icon, label. Left-click selects and expands
     /// it; right-click opens `menu`.
-    #[allow(clippy::too_many_arguments)]
     fn node<'a>(
         &self,
         level: u16,
         key: NodeKey,
         label: &str,
         glyph: Text<'a>,
-        color: Option<fn(&Theme) -> Color>,
         expandable: bool,
         menu: Vec<(&'static str, Message)>,
     ) -> Element<'a, Message> {
@@ -316,7 +283,7 @@ impl Explorer {
                 .into(),
         };
         let selected = self.selected.as_ref() == Some(&key);
-        let content = row![chevron, style::icon_colored(glyph, color), text(label.to_string()).size(style::BODY)]
+        let content = row![chevron, glyph.size(style::ICON), text(label.to_string()).size(style::BODY)]
             .spacing(style::S1 + 2.0)
             .align_y(Alignment::Center);
         let node = button(content)
@@ -335,7 +302,7 @@ fn object_icon<'a>(kind: ObjectKind) -> (Text<'a>, fn(&Theme) -> Color) {
         ObjectKind::View => (icon::eye(), style::accent_color),
         ObjectKind::Procedure => (icon::symbol_method(), purple),
         ObjectKind::Function => (icon::symbol_operator(), purple),
-        ObjectKind::Trigger => (icon::symbol_event(), warning),
+        ObjectKind::Trigger => (icon::symbol_event(), style::warning_color),
     }
 }
 
@@ -343,14 +310,10 @@ pub fn purple(t: &Theme) -> Color {
     if t.extended_palette().is_dark { color!(0xa48cb8) } else { color!(0x7a5f91) }
 }
 
-fn warning(t: &Theme) -> Color {
-    t.extended_palette().warning.base.color
-}
-
 /// A column under an expanded table: key or field icon, name, dimmed type.
 fn column_leaf<'a>(level: u16, c: &ColumnInfo) -> Element<'a, Message> {
     let glyph = if c.primary_key {
-        style::icon_colored(icon::key(), Some(warning))
+        style::icon_colored(icon::key(), Some(style::warning_color))
     } else {
         style::dim(icon::symbol_field()).size(style::ICON)
     };

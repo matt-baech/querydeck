@@ -287,16 +287,12 @@ fn unqualified(out: &mut Builder, context: Context, sources: &Sources, refs: &[T
                 out.keyword(0, Kind::Keyword, k);
             }
         }
-        Context::Relation => {
-            for obj in objects.iter().filter(|o| matches!(o.kind, ObjectKind::Table | ObjectKind::View)) {
-                out.object(0, obj, true);
-            }
-            for schema in schemas(objects) {
-                out.name(1, Kind::Schema, schema, "schema".into());
-            }
-        }
-        Context::Procedure => {
-            for obj in objects.iter().filter(|o| o.kind == ObjectKind::Procedure) {
+        Context::Relation | Context::Procedure => {
+            let wanted: &[ObjectKind] = match context {
+                Context::Procedure => &[ObjectKind::Procedure],
+                _ => &[ObjectKind::Table, ObjectKind::View],
+            };
+            for obj in objects.iter().filter(|o| wanted.contains(&o.kind)) {
                 out.object(0, obj, true);
             }
             for schema in schemas(objects) {
@@ -375,13 +371,7 @@ fn resolve<'a>(objects: &'a [SchemaObject], parts: &[String]) -> Option<&'a Sche
         .filter(|o| matches!(o.kind, ObjectKind::Table | ObjectKind::View))
         .filter(|o| o.name.eq_ignore_ascii_case(name))
         .filter(|o| schema.is_none_or(|s| o.schema.eq_ignore_ascii_case(s)));
-    let first = candidates.next()?;
-    Some(
-        std::iter::once(first)
-            .chain(candidates)
-            .find(|o| matches!(o.schema.as_str(), "dbo" | "public"))
-            .unwrap_or(first),
-    )
+    candidates.clone().find(|o| matches!(o.schema.as_str(), "dbo" | "public")).or_else(|| candidates.next())
 }
 
 fn schemas(objects: &[SchemaObject]) -> Vec<&str> {

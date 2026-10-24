@@ -5,8 +5,8 @@ use std::sync::LazyLock;
 
 use iced::font::Weight;
 use iced::theme::Palette;
-use iced::widget::{Button, Text, Tooltip, button, container, row, text, tooltip};
-use iced::{Background, Border, Color, Element, Font, Theme, border, color};
+use iced::widget::{Button, Checkbox, Column, Text, Tooltip, button, checkbox, container, row, text, tooltip};
+use iced::{Background, Border, Color, Element, Font, Length, Theme, border, color};
 
 // ------------------------------------------------------------------ tokens
 
@@ -126,6 +126,10 @@ pub fn danger_color(t: &Theme) -> Color {
     t.extended_palette().danger.base.color
 }
 
+pub fn warning_color(t: &Theme) -> Color {
+    t.extended_palette().warning.base.color
+}
+
 pub fn accent_color(t: &Theme) -> Color {
     t.extended_palette().primary.base.color
 }
@@ -140,6 +144,35 @@ pub fn tool_button<'a, M: Clone + 'a>(glyph: Text<'a>, label: Option<&'a str>, m
         None => glyph.into(),
     };
     button(content).padding([S1, S2]).style(flat).on_press_maybe(msg)
+}
+
+/// An icon-only toolbar button with a tooltip.
+pub fn icon_button<'a, M: Clone + 'a>(glyph: Text<'a>, msg: impl Into<Option<M>>, tip_text: &'a str) -> Tooltip<'a, M> {
+    tip(tool_button(glyph.size(ICON), None, msg.into()), tip_text)
+}
+
+/// A dialog-style button with a text label, e.g. "Connect" or "Cancel".
+pub fn text_button<'a, M: 'a>(label: &'a str, style: fn(&Theme, button::Status) -> button::Style) -> Button<'a, M> {
+    button(text(label).size(BODY)).padding([S1 + 2.0, S3]).style(style)
+}
+
+/// A checkbox in the app's size.
+pub fn check<'a, M: 'a>(
+    checked: bool,
+    label: impl text::IntoFragment<'a>,
+    on_toggle: impl Fn(bool) -> M + 'a,
+) -> Checkbox<'a, M> {
+    checkbox(checked).label(label).on_toggle(on_toggle).size(14).text_size(BODY)
+}
+
+/// A dimmed message centred in the available space.
+pub fn placeholder<'a, M: 'a>(label: impl text::IntoFragment<'a>) -> Element<'a, M> {
+    container(dim(text(label).size(BODY))).center(Length::Fill).into()
+}
+
+/// An empty panel's icon, message and call to action, centred.
+pub fn empty_state<'a, M: 'a>(content: Column<'a, M>) -> Element<'a, M> {
+    container(content.spacing(S3).align_x(iced::Alignment::Center)).center(Length::Fill).into()
 }
 
 /// Wraps a widget with a hover tooltip.

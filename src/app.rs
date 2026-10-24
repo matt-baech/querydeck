@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
-use iced::widget::{
-    button, center, checkbox, column, container, opaque, operation, row, scrollable, space, stack, text,
-};
+use iced::widget::{button, center, column, container, opaque, operation, row, scrollable, space, stack, text};
 use iced::{Alignment, Color, Element, Length, Point, Subscription, Task, Theme, mouse, window};
 use iced_aw::ContextMenu;
 use iced_code::{Action, Edit};
@@ -18,9 +16,9 @@ use crate::db::catalog::{self, DbObject, SchemaInfo};
 use crate::db::{self, Connected, Connection, Profile, QueryOutcome};
 use crate::explorer::{Explorer, ExplorerMsg, Load, Request, context_menu};
 use crate::files;
-use crate::history::{History, Rows, RunState};
+use crate::history::{History, RunState};
 use crate::preferences::{self, TrayStatus};
-use crate::query_tab::{FindBar, QueryTab, ResultsPane, completion_popup, horizontal_divider, splitter};
+use crate::query_tab::{QueryTab, TabMsg, completion_popup, horizontal_divider, splitter};
 use crate::settings::{Settings, ThemeChoice};
 use crate::style::{self, icon};
 use crate::tray::{self, TrayEvent};
@@ -56,20 +54,8 @@ pub enum Message {
     Connected(Result<Connected, String>),
     Disconnect,
 
-    // Find and replace
-    /// Opens the find bar; `true` also shows the replace row.
-    OpenFind(bool),
-    CloseFind,
-    FindInput(String),
-    ReplaceInput(String),
-    ToggleMatchCase,
-    ToggleWholeWord,
-    ToggleReplace,
-    /// Enter in the find box: next match, or previous with Shift.
-    FindSubmit,
-    FindNext,
-    FindPrevious,
-    Replace,
+    /// A message for the active query tab.
+    Tab(TabMsg),
     ReplaceAll,
 
     // Query history
@@ -116,16 +102,9 @@ pub enum Message {
     TabConnected(u64, String, Result<Connected, String>),
     QueryFinished(u64, Arc<QueryOutcome>),
     CancelSent(Result<(), String>),
-    ShowPane(ResultsPane),
-    SelectResult(usize),
-    Page(usize),
 
     // Autocomplete
     TriggerCompletion,
-    CompletionMove(isize),
-    /// Insert the given suggestion, or the selected one.
-    AcceptCompletion(Option<usize>),
-    CloseCompletion,
     SchemaLoaded(String, Result<Arc<SchemaInfo>, String>),
 }
 
@@ -263,10 +242,10 @@ impl App {
             }),
         ];
         // The find boxes swallow Esc, so listen for it whatever has focus.
-        if self.tabs.iter().any(|t| t.id == self.active && t.find.is_some()) {
+        if self.current().is_some_and(|t| t.find.is_some()) {
             subs.push(iced::event::listen_with(|event, _status, _window| match event {
                 iced::Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), .. }) => {
-                    Some(Message::CloseFind)
+                    Some(Message::Tab(TabMsg::CloseFind))
                 }
                 _ => None,
             }));
@@ -320,21 +299,6 @@ impl App {
             Some(id) => window::close(id),
             None => Task::none(),
         }
-    }
-
-    /// Changes the find bar, then searches again from the cursor so the
-    /// selection follows what's typed.
-    fn update_find(&mut self, change: impl FnOnce(&mut FindBar)) {
-        let Some(tab) = self.active_tab() else {
-            return;
-        };
-        let Some(find) = &mut tab.find else {
-            return;
-        };
-        change(find);
-        let search = find.search();
-        tab.editor.set_search(Some(search));
-        let _ = tab.editor.find_from_cursor();
     }
 
     /// Asks whether the window is maximized before recording a new size or
@@ -451,8 +415,7 @@ impl App {
 
     /// Where file dialogs start: the active tab's folder.
     fn file_dir(&self) -> Option<PathBuf> {
-        let tab = self.tabs.iter().find(|t| t.id == self.active)?;
-        tab.path.as_ref()?.parent().map(PathBuf::from)
+        self.current()?.path.as_ref()?.parent().map(PathBuf::from)
     }
 
     /// Saves a tab to its file, asking for one if it has none (or `ask`).
@@ -521,6 +484,17 @@ impl App {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
+    /// The active tab, for views.
+    fn current(&self) -> Option<&QueryTab> {
+        self.tabs.iter().find(|t| t.id == self.active)
+    }
+
+    /// Changes a setting and saves the settings file.
+    fn set(&mut self, change: impl FnOnce(&mut Settings)) {
+        change(&mut self.settings);
+        self.save_settings();
+    }
+
     fn tab(&mut self, id: u64) -> Option<&mut QueryTab> {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
@@ -538,29 +512,16 @@ impl App {
         match message {
             Message::OpenSettings => self.settings_open = true,
             Message::CloseSettings => self.settings_open = false,
-            Message::SetTheme(choice) => {
-                self.settings.theme = choice;
-                self.save_settings();
-            }
-            Message::SetEditorFontSize(size) => {
-                self.settings.editor_font_size = size;
-                self.save_settings();
-            }
+            Message::SetTheme(choice) => self.set(|s| s.theme = choice),
+            Message::SetEditorFontSize(size) => self.set(|s| s.editor_font_size = size),
+            Message::SetCompleteWhileTyping(on) => self.set(|s| s.complete_while_typing = on),
             Message::SetPageSize(size) => {
-                self.settings.page_size = size;
-                for tab in &mut self.tabs {
-                    tab.page = 0;
-                }
-                self.save_settings();
-            }
-            Message::SetCompleteWhileTyping(on) => {
-                self.settings.complete_while_typing = on;
-                self.save_settings();
+                self.set(|s| s.page_size = size);
+                self.tabs.iter_mut().for_each(|t| t.page = 0);
             }
             Message::SetMinimizeToTray(on) => {
-                self.settings.minimize_to_tray = on;
+                self.set(|s| s.minimize_to_tray = on);
                 self.tray = if on { TrayStatus::Starting } else { TrayStatus::Off };
-                self.save_settings();
             }
             Message::Tray(event) => match event {
                 TrayEvent::Ready => self.tray = TrayStatus::Ready,
@@ -788,16 +749,9 @@ impl App {
                 }
             }
             Message::InsertHistory(id) => {
-                let Some(sql) = self.history.get(id).map(|e| e.sql.clone()) else {
-                    return Task::none();
-                };
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                tab.completion = None;
-                tab.editor.perform(Action::Edit(Edit::Paste(Arc::new(sql))));
-                tab.dirty = true;
-                return operation::focus(tab.editor_id.clone());
+                if let (Some(sql), Some(tab)) = (self.history.get(id).map(|e| e.sql.clone()), self.active_tab()) {
+                    return tab.paste(sql);
+                }
             }
             Message::CopyHistory(id) => {
                 if let Some(entry) = self.history.get(id) {
@@ -805,92 +759,20 @@ impl App {
                 }
             }
             Message::ClearHistory => self.history.clear(),
-            Message::OpenFind(replace) => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                tab.completion = None;
-                let find = tab.find.get_or_insert_with(FindBar::default);
-                find.replace = replace;
-                // Search for the selected text, like most editors.
-                if let Some(selected) = tab.editor.selection().filter(|s| !s.is_empty() && !s.contains('\n')) {
-                    find.query = selected;
-                }
-                let search = find.search();
-                tab.editor.set_search(Some(search));
-                let id = if replace && !find.query.is_empty() { tab.replace_id.clone() } else { tab.find_id.clone() };
-                return Task::batch([operation::focus(id.clone()), operation::select_all(id)]);
-            }
-            Message::CloseFind => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                if tab.find.take().is_none() {
-                    return Task::none();
-                }
-                tab.editor.set_search(None);
-                return operation::focus(tab.editor_id.clone());
-            }
-            Message::FindInput(query) => self.update_find(|f| f.query = query),
-            Message::ToggleMatchCase => self.update_find(|f| f.match_case = !f.match_case),
-            Message::ToggleWholeWord => self.update_find(|f| f.whole_word = !f.whole_word),
-            Message::ReplaceInput(replacement) => {
-                if let Some(find) = self.active_tab().and_then(|t| t.find.as_mut()) {
-                    find.replacement = replacement;
-                }
-            }
-            Message::ToggleReplace => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                let Some(find) = &mut tab.find else {
-                    return Task::none();
-                };
-                find.replace = !find.replace;
-                let id = if find.replace { tab.replace_id.clone() } else { tab.find_id.clone() };
-                return operation::focus(id);
-            }
-            Message::FindSubmit => {
-                let previous = self.modifiers.shift();
+            Message::Tab(msg) => {
+                let shift = self.modifiers.shift();
                 if let Some(tab) = self.active_tab() {
-                    let _ = if previous { tab.editor.find_previous() } else { tab.editor.find_next() };
-                }
-            }
-            Message::FindNext | Message::FindPrevious => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                if tab.find.is_none() {
-                    return self.update(Message::OpenFind(false));
-                }
-                let _ = if matches!(message, Message::FindNext) {
-                    tab.editor.find_next()
-                } else {
-                    tab.editor.find_previous()
-                };
-            }
-            Message::Replace => {
-                if let Some(tab) = self.active_tab()
-                    && let Some(find) = &tab.find
-                {
-                    let replacement = find.replacement.clone();
-                    tab.dirty |= tab.editor.replace(&replacement);
+                    return tab.update(msg, shift);
                 }
             }
             Message::ReplaceAll => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                let Some(find) = &tab.find else {
-                    return Task::none();
-                };
-                let replacement = find.replacement.clone();
-                let count = tab.editor.replace_all(&replacement);
-                tab.dirty |= count > 0;
-                self.status = Status::Info(match count {
-                    1 => "Replaced 1 occurrence.".into(),
-                    n => format!("Replaced {n} occurrences."),
-                });
+                if let Some(n) = self.active_tab().and_then(QueryTab::replace_all) {
+                    self.status = Status::Info(if n == 1 {
+                        "Replaced 1 occurrence.".into()
+                    } else {
+                        format!("Replaced {n} occurrences.")
+                    });
+                }
             }
             Message::Edit(action) => {
                 let while_typing = self.settings.complete_while_typing;
@@ -922,34 +804,6 @@ impl App {
                 }
             }
             Message::TriggerCompletion => return self.refresh_completion(true),
-            Message::CompletionMove(step) => {
-                if let Some(c) = self.active_tab().and_then(|t| t.completion.as_mut()) {
-                    c.select_next(step);
-                }
-            }
-            Message::AcceptCompletion(index) => {
-                let Some(tab) = self.active_tab() else {
-                    return Task::none();
-                };
-                let Some(c) = tab.completion.take() else {
-                    return Task::none();
-                };
-                let Some(item) = c.items.get(index.unwrap_or(c.selected)) else {
-                    return Task::none();
-                };
-                for _ in 0..c.replace {
-                    tab.editor.perform(Action::Edit(Edit::Backspace));
-                }
-                tab.editor.perform(Action::Edit(Edit::Paste(Arc::new(item.insert.clone()))));
-                tab.dirty = true;
-                // Clicking the popup took focus away from the editor.
-                return iced::widget::operation::focus(tab.editor_id.clone());
-            }
-            Message::CloseCompletion => {
-                if let Some(tab) = self.active_tab() {
-                    tab.completion = None;
-                }
-            }
             Message::SchemaLoaded(database, result) => {
                 let failed = result.as_ref().err().cloned();
                 self.schemas.insert(
@@ -1025,23 +879,8 @@ impl App {
                 }
             }
             Message::QueryFinished(id, outcome) => {
-                let elapsed = outcome.elapsed;
-                self.history.finish(
-                    id,
-                    if outcome.failed {
-                        RunState::Failed(Some(elapsed))
-                    } else {
-                        RunState::Succeeded(
-                            elapsed,
-                            Rows {
-                                sets: outcome.results.len(),
-                                returned: outcome.results.iter().map(|r| r.rows.len()).sum(),
-                                affected: outcome.rows_affected,
-                            },
-                        )
-                    },
-                );
-                let secs = elapsed.as_secs_f64();
+                self.history.finish(id, RunState::of(&outcome));
+                let secs = outcome.elapsed.as_secs_f64();
                 self.status = if outcome.failed {
                     Status::Error(format!("Query failed after {secs:.3}s."))
                 } else {
@@ -1058,22 +897,6 @@ impl App {
                     self.schemas.remove(&database);
                 }
                 return self.load_schema(database);
-            }
-            Message::ShowPane(p) => {
-                if let Some(tab) = self.active_tab() {
-                    tab.pane = p;
-                }
-            }
-            Message::SelectResult(i) => {
-                if let Some(tab) = self.active_tab() {
-                    tab.result_index = i;
-                    tab.page = 0;
-                }
-            }
-            Message::Page(p) => {
-                if let Some(tab) = self.active_tab() {
-                    tab.page = p;
-                }
             }
         }
         Task::none()
@@ -1267,9 +1090,7 @@ impl App {
     /// The unsaved-changes prompts: an overview when several tabs are
     /// affected, then one question per file.
     fn confirm_view<'a>(&'a self, c: &'a Closing) -> Element<'a, Message> {
-        let action = |label: &'static str, msg: Message, style: fn(&Theme, button::Status) -> button::Style| {
-            button(text(label).size(style::BODY)).padding([style::S1 + 2.0, style::S3]).style(style).on_press(msg)
-        };
+        let action = |label, msg, style| style::text_button(label, style).on_press(msg);
         let mut buttons = row![space().width(Length::Fill)].spacing(style::S2);
         buttons = buttons.push(action("Cancel", Message::ConfirmCancel, style::neutral));
         let mut body = column![].spacing(style::S3);
@@ -1278,7 +1099,7 @@ impl App {
             let verb = if c.then_quit { "quit" } else { "close" };
             body = body.push(style::dim(
                 text(format!(
-                    "You're about to {verb} {} tabs with unsaved changes. Close them all without saving,                      or choose for each file?",
+                    "You're about to {verb} {} tabs with unsaved changes. Close them all without saving, or choose for each file?",
                     c.queue.len()
                 ))
                 .size(style::BODY),
@@ -1304,16 +1125,11 @@ impl App {
             body = body.push(style::dim(text("Your changes will be lost if you don't save them.").size(style::BODY)));
             let rest = c.queue.len().saturating_sub(1);
             if rest > 0 {
-                body = body.push(
-                    checkbox(c.apply_rest)
-                        .label(format!(
-                            "Do the same for the remaining {rest} {}",
-                            if rest == 1 { "file" } else { "files" }
-                        ))
-                        .on_toggle(Message::ConfirmApplyRest)
-                        .size(14)
-                        .text_size(style::BODY),
-                );
+                body = body.push(style::check(
+                    c.apply_rest,
+                    format!("Do the same for the remaining {rest} {}", if rest == 1 { "file" } else { "files" }),
+                    Message::ConfirmApplyRest,
+                ));
             }
             buttons = buttons.push(action("Don't Save", Message::ConfirmDiscard, style::neutral));
             buttons = buttons.push(action("Save", Message::ConfirmSave, style::success));
@@ -1321,7 +1137,7 @@ impl App {
         };
 
         let mut header = row![
-            style::icon_colored(icon::warning(), Some(|t: &Theme| t.extended_palette().warning.base.color)),
+            style::icon_colored(icon::warning(), Some(style::warning_color)),
             text(title).size(style::TITLE).font(style::UI_BOLD),
         ]
         .spacing(style::S2)
@@ -1340,7 +1156,7 @@ impl App {
         if self.settings_open || self.dialog_open || self.closing.is_some() {
             return None;
         }
-        let tab = self.tabs.iter().find(|t| t.id == self.active)?;
+        let tab = self.current()?;
         let c = tab.completion.as_ref()?;
         Some(completion_popup(c, tab.editor.caret_bounds()?, self.window_size, self.settings.editor_font_size))
     }
@@ -1350,23 +1166,9 @@ impl App {
         let header = row![
             style::section_title("Object Explorer"),
             space().width(Length::Fill),
-            style::tip(style::tool_button(icon::plug().size(style::ICON), None, Some(Message::OpenDialog)), "Connect…"),
-            style::tip(
-                style::tool_button(
-                    icon::refresh().size(style::ICON),
-                    None,
-                    connected.then_some(Message::RefreshExplorer)
-                ),
-                "Refresh",
-            ),
-            style::tip(
-                style::tool_button(
-                    icon::debug_disconnect().size(style::ICON),
-                    None,
-                    connected.then_some(Message::Disconnect)
-                ),
-                "Disconnect",
-            ),
+            style::icon_button(icon::plug(), Message::OpenDialog, "Connect…"),
+            style::icon_button(icon::refresh(), connected.then_some(Message::RefreshExplorer), "Refresh"),
+            style::icon_button(icon::debug_disconnect(), connected.then_some(Message::Disconnect), "Disconnect"),
         ]
         .spacing(2)
         .padding([style::S1, style::S1])
@@ -1377,20 +1179,11 @@ impl App {
                 .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(6).scroller_width(6)))
                 .height(Length::Fill)
                 .into(),
-            None => container(
-                column![
-                    style::icon_colored(icon::server(), None).size(32),
-                    style::dim(text("Not connected").size(style::BODY)),
-                    button(text("Connect…").size(style::BODY))
-                        .padding([style::S1 + 2.0, style::S3])
-                        .style(style::success)
-                        .on_press(Message::OpenDialog),
-                ]
-                .spacing(style::S3)
-                .align_x(Alignment::Center),
-            )
-            .center(Length::Fill)
-            .into(),
+            None => style::empty_state(column![
+                style::icon_colored(icon::server(), None).size(32),
+                style::dim(text("Not connected").size(style::BODY)),
+                style::text_button("Connect…", style::success).on_press(Message::OpenDialog),
+            ]),
         };
 
         container(column![container(header).padding([0.0, style::S1]), tree])
@@ -1418,12 +1211,9 @@ impl App {
 
     fn tab_strip(&self) -> Element<'_, Message> {
         let toggle_icon = if self.sidebar_open { icon::layout_sidebar_left() } else { icon::layout_sidebar_left_off() };
-        let mut strip = row![style::tip(
-            style::tool_button(toggle_icon.size(style::ICON), None, Some(Message::ToggleSidebar)),
-            "Toggle Object Explorer",
-        )]
-        .spacing(2)
-        .align_y(Alignment::End);
+        let mut strip = row![style::icon_button(toggle_icon, Message::ToggleSidebar, "Toggle Object Explorer")]
+            .spacing(2)
+            .align_y(Alignment::End);
         for tab in &self.tabs {
             let active = tab.id == self.active;
             let lead: Element<'_, Message> = if tab.running.is_some() {
@@ -1459,14 +1249,8 @@ impl App {
         }
         strip = strip.push(
             container(row![
-                style::tip(
-                    style::tool_button(icon::add().size(style::ICON), None, Some(Message::NewQuery(None))),
-                    "New query (Ctrl+N)",
-                ),
-                style::tip(
-                    style::tool_button(icon::folder_opened().size(style::ICON), None, Some(Message::OpenFile)),
-                    "Open file (Ctrl+O)",
-                ),
+                style::icon_button(icon::add(), Message::NewQuery(None), "New query (Ctrl+N)"),
+                style::icon_button(icon::folder_opened(), Message::OpenFile, "Open file (Ctrl+O)"),
             ])
             .padding([2, 0]),
         );
@@ -1481,28 +1265,19 @@ impl App {
     }
 
     fn active_tab_view(&self) -> Element<'_, Message> {
-        match self.tabs.iter().find(|t| t.id == self.active) {
+        match self.current() {
             Some(tab) => tab.view(
                 self.session.is_some(),
                 style::highlighter(&self.current_theme()),
                 &self.settings,
                 &self.history,
             ),
-            None => container(
-                column![
-                    style::dim(icon::file_code().size(32)),
-                    style::dim(text("No open queries").size(style::BODY)),
-                    button(text("New Query").size(style::BODY))
-                        .padding([style::S1 + 2.0, style::S3])
-                        .style(style::neutral)
-                        .on_press(Message::NewQuery(None)),
-                    style::dim(text("Ctrl+N").size(style::SMALL)),
-                ]
-                .spacing(style::S3)
-                .align_x(Alignment::Center),
-            )
-            .center(Length::Fill)
-            .into(),
+            None => style::empty_state(column![
+                style::dim(icon::file_code().size(32)),
+                style::dim(text("No open queries").size(style::BODY)),
+                style::text_button("New Query", style::neutral).on_press(Message::NewQuery(None)),
+                style::dim(text("Ctrl+N").size(style::SMALL)),
+            ]),
         }
     }
 
@@ -1524,11 +1299,10 @@ impl App {
         let mut bar = row![message, space().width(Length::Fill)].spacing(style::S4).align_y(Alignment::Center);
 
         // Result summary for the active tab, like ADS.
-        if let Some(outcome) =
-            self.tabs.iter().find(|t| t.id == self.active).and_then(|t| t.outcome.as_ref().map(|o| (o, t.result_index)))
+        if let Some(tab) = self.current()
+            && let Some(o) = &tab.outcome
         {
-            let (o, i) = outcome;
-            if let Some(set) = o.results.get(i) {
+            if let Some(set) = o.results.get(tab.result_index) {
                 bar = bar.push(segment(icon::list_flat(), format!("{} rows", set.rows.len())));
             }
             bar = bar.push(segment(icon::watch(), format!("{:.3}s", o.elapsed.as_secs_f64())));
@@ -1575,9 +1349,15 @@ pub fn shortcut(key: &Key, modifiers: keyboard::Modifiers) -> Option<Message> {
             Some(if modifiers.shift() { Message::SaveAs } else { Message::Save })
         }
         Key::Character(c) if modifiers.command() && c.as_str() == "," => Some(Message::OpenSettings),
-        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("f") => Some(Message::OpenFind(false)),
-        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("h") => Some(Message::OpenFind(true)),
-        Key::Named(Named::F3) => Some(if modifiers.shift() { Message::FindPrevious } else { Message::FindNext }),
+        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("f") => {
+            Some(Message::Tab(TabMsg::OpenFind(false)))
+        }
+        Key::Character(c) if modifiers.command() && c.eq_ignore_ascii_case("h") => {
+            Some(Message::Tab(TabMsg::OpenFind(true)))
+        }
+        Key::Named(Named::F3) => {
+            Some(if modifiers.shift() { Message::Tab(TabMsg::FindPrevious) } else { Message::Tab(TabMsg::FindNext) })
+        }
         _ => None,
     }
 }
