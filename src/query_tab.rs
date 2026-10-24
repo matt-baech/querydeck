@@ -4,20 +4,19 @@ use std::sync::Arc;
 
 use iced::keyboard::{Key, key::Named};
 use iced::widget::{
-    Id, button, column, container, mouse_area, operation, pin, row, scrollable, space, table, text, text_input,
+    Id, button, column, container, mouse_area, operation, pin, row, scrollable, space, text, text_input,
 };
-use iced::{Alignment, Element, Font, Length, Rectangle, Size, Task, mouse, task};
+use iced::{Alignment, Element, Length, Rectangle, Size, Task, mouse, task};
+use iced_aw::ContextMenu;
 use iced_code::{Action, Binding, Edit, LineEnding, code_editor};
 
 use crate::app::{Drag, Message, shortcut};
 use crate::complete::{Completion, Kind};
 use crate::db::{self, Connection, QueryOutcome};
+use crate::explorer::context_menu;
 use crate::history::History;
 use crate::settings::Settings;
 use crate::style::{self, icon};
-
-/// Long cell values are cut to this many characters in the grid.
-const MAX_CELL_CHARS: usize = 120;
 
 /// The find (and replace) bar above the editor.
 #[derive(Debug, Clone, Default)]
@@ -54,7 +53,9 @@ pub enum TabMsg {
     Replace,
     ShowPane(ResultsPane),
     SelectResult(usize),
-    Page(usize),
+    /// Copies the selected cells; `true` adds the column titles.
+    CopyCells(bool),
+    SelectAllCells,
     CompletionMove(isize),
     /// Insert the given suggestion, or the selected one.
     AcceptCompletion(Option<usize>),
@@ -97,7 +98,8 @@ pub struct QueryTab {
     pub outcome: Option<Arc<QueryOutcome>>,
     pub pane: ResultsPane,
     pub result_index: usize,
-    pub page: usize,
+    /// One grid per result set: its columns, scroll, widths and selection.
+    pub grids: Vec<(Vec<iced_grid::Column>, iced_grid::State)>,
 }
 
 impl QueryTab {
@@ -122,7 +124,7 @@ impl QueryTab {
             outcome: None,
             pane: ResultsPane::Grid,
             result_index: 0,
-            page: 0,
+            grids: Vec::new(),
         }
     }
 
@@ -161,8 +163,20 @@ impl QueryTab {
                 }
             }
             TabMsg::ShowPane(pane) => self.pane = pane,
-            TabMsg::SelectResult(i) => (self.result_index, self.page) = (i, 0),
-            TabMsg::Page(page) => self.page = page,
+            TabMsg::SelectResult(i) => self.result_index = i,
+            TabMsg::SelectAllCells => {
+                if let Some((_, grid)) = self.grids.get(self.result_index) {
+                    grid.select(iced_grid::Target::All, false);
+                }
+            }
+            TabMsg::CopyCells(headers) => {
+                let set = self.outcome.as_ref().and_then(|o| o.results.get(self.result_index));
+                if let (Some(set), Some((columns, grid))) = (set, self.grids.get(self.result_index))
+                    && let Some(text) = grid.selected_text(columns, &set.rows, headers)
+                {
+                    return iced::clipboard::write(text);
+                }
+            }
             TabMsg::CompletionMove(step) => {
                 if let Some(c) = &mut self.completion {
                     c.select_next(step);
@@ -253,7 +267,7 @@ impl QueryTab {
         self.pane =
             if outcome.failed || outcome.results.is_empty() { ResultsPane::Messages } else { ResultsPane::Grid };
         self.result_index = 0;
-        self.page = 0;
+        self.grids = outcome.results.iter().map(|set| (grid_columns(set), iced_grid::State::new())).collect();
         if let Some(db) = &outcome.current_database {
             self.current_db = db.clone();
         }
@@ -335,7 +349,7 @@ impl QueryTab {
         if let Some(find) = &self.find {
             layout = layout.push(self.find_view(find)).push(horizontal_divider());
         }
-        layout.push(editor).push(splitter(Drag::Editor)).push(self.results_view(settings.page_size, history)).into()
+        layout.push(editor).push(splitter(Drag::Editor)).push(self.results_view(history)).into()
     }
 
     fn find_view<'a>(&'a self, find: &'a FindBar) -> Element<'a, Message> {
@@ -422,7 +436,7 @@ impl QueryTab {
         container(bar).padding([style::S1, style::S2]).into()
     }
 
-    fn results_view<'a>(&'a self, page_size: usize, history: &'a History) -> Element<'a, Message> {
+    fn results_view<'a>(&'a self, history: &'a History) -> Element<'a, Message> {
         let tab = |label: String, pane: ResultsPane| -> Element<'a, Message> {
             let active = self.pane == pane;
             let label = text(label).size(style::SMALL).font(style::UI_BOLD);
@@ -493,82 +507,44 @@ impl QueryTab {
             }
             (ResultsPane::Grid, Some(outcome)) => match outcome.results.get(self.result_index) {
                 None => style::placeholder("The query returned no result sets."),
-                Some(set) => self.grid(set, page_size),
+                Some(set) => self.grid(set),
             },
         };
 
         column![container(tabs).padding([0.0, style::S2]), horizontal_divider(), body].height(Length::Fill).into()
     }
 
-    fn grid<'a>(&'a self, set: &'a db::ResultSet, page_size: usize) -> Element<'a, Message> {
-        let page_size = page_size.max(1);
-        let pages = set.rows.len().div_ceil(page_size).max(1);
-        let page = self.page.min(pages - 1);
-        let start = page * page_size;
-        let end = (start + page_size).min(set.rows.len());
-        let page_rows = &set.rows[start..end];
-
-        let mut columns = vec![
-            table::column(style::dim(text("#").size(style::SMALL)), move |(n, _): (usize, &'a Vec<String>)| {
-                style::dim(text(n + 1).size(style::SMALL).font(style::MONO_FONT))
-            })
-            .align_x(Alignment::End),
+    fn grid<'a>(&'a self, set: &'a db::ResultSet) -> Element<'a, Message> {
+        let Some((columns, state)) = self.grids.get(self.result_index) else {
+            return space().into();
+        };
+        let grid = iced_grid::grid(state, columns, &set.rows)
+            .font(style::MONO_FONT)
+            .header_font(style::UI_BOLD)
+            .text_size(style::BODY)
+            .row_height(24.0)
+            .style(style::grid)
+            .format(|v| if v == db::NULL { iced_grid::Format { dim: true, italic: true } } else { Default::default() });
+        let menu = [
+            ("Copy", Message::Tab(TabMsg::CopyCells(false))),
+            ("Copy with Headers", Message::Tab(TabMsg::CopyCells(true))),
+            ("Select All", Message::Tab(TabMsg::SelectAllCells)),
+            ("Export to CSV…", Message::ExportCsv),
         ];
-        for (ci, name) in set.columns.iter().enumerate() {
-            let header = text(if name.is_empty() { "(No column name)" } else { name.as_str() })
-                .size(style::BODY)
-                .font(style::UI_BOLD);
-            let numeric = is_numeric_column(page_rows, ci);
-            let col = table::column(header, move |(_, row): (usize, &'a Vec<String>)| {
-                let value = row.get(ci).map(String::as_str).unwrap_or_default();
-                if value == db::NULL {
-                    style::dim(
-                        text("NULL")
-                            .size(style::BODY)
-                            .font(Font { style: iced::font::Style::Italic, ..style::MONO_FONT }),
-                    )
-                } else {
-                    text(truncate(value)).size(style::BODY).font(style::MONO_FONT)
-                }
-            });
-            columns.push(if numeric { col.align_x(Alignment::End) } else { col });
-        }
-        let rows = page_rows.iter().enumerate().map(move |(i, r)| (start + i, r));
-        let grid = table(columns, rows).padding_x(style::S2 + 2.0).padding_y(style::S1);
-
-        let scroll = scrollable(grid)
-            .direction(scrollable::Direction::Both {
-                vertical: scrollable::Scrollbar::default(),
-                horizontal: scrollable::Scrollbar::default(),
-            })
-            .width(Length::Fill)
-            .height(Length::Fill);
-
-        if pages == 1 {
-            return scroll.into();
-        }
-        let pager = row![
-            space().width(Length::Fill),
-            style::tool_button(
-                icon::chevron_left().size(style::ICON),
-                None,
-                (page > 0).then(|| Message::Tab(TabMsg::Page(page - 1)))
-            ),
-            style::dim(
-                text(format!("Rows {}–{} of {} · page {}/{}", start + 1, end, set.rows.len(), page + 1, pages))
-                    .size(style::SMALL)
-            ),
-            style::tool_button(
-                icon::chevron_right().size(style::ICON),
-                None,
-                (page + 1 < pages).then(|| Message::Tab(TabMsg::Page(page + 1)))
-            ),
-        ]
-        .spacing(style::S1)
-        .align_y(Alignment::Center);
-
-        column![scroll, horizontal_divider(), container(pager).padding([2.0, style::S2])].into()
+        ContextMenu::new(grid, move || context_menu(&menu)).into()
     }
+}
+
+/// Column titles, with numbers right-aligned.
+fn grid_columns(set: &db::ResultSet) -> Vec<iced_grid::Column> {
+    let sample = &set.rows[..set.rows.len().min(1000)];
+    (set.columns.iter().enumerate())
+        .map(|(i, name)| {
+            let title = if name.is_empty() { "(No column name)" } else { name.as_str() };
+            let align = if is_numeric_column(sample, i) { iced_grid::Align::End } else { iced_grid::Align::Start };
+            iced_grid::Column::new(title).align(align)
+        })
+        .collect()
 }
 
 /// Keys that drive autocomplete. Arrows, Enter, Tab and Esc only belong to
@@ -688,12 +664,4 @@ const GRAB: f32 = 5.0;
 
 fn transparent(_: &iced::Theme) -> container::Style {
     container::Style::default()
-}
-
-fn truncate(s: &str) -> String {
-    let one_line = s.replace(['\n', '\r'], " ");
-    match one_line.char_indices().nth(MAX_CELL_CHARS) {
-        Some((i, _)) => format!("{}…", &one_line[..i]),
-        None => one_line,
-    }
 }

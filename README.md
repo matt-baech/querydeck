@@ -12,7 +12,7 @@ litedb aims to cover the everyday 90% of what you'd open SQL Server Management S
 - **SQL editor** with syntax highlighting, line numbers, undo/redo, auto-indent, comment toggling, and find and replace with match case, whole word and replace all (built on [iced_code](https://github.com/matt-baech/iced_code)). Runs the whole script or just the selection. SQL Server scripts can be split into batches with `GO`.
 - **Open and save `.sql` files** (also by dragging them onto the window, or `litedb file.sql`). Files saved by SSMS in UTF-16 open fine. Unsaved tabs show a dot, and closing or quitting asks before discarding changes.
 - **Autocomplete** that knows where you are: tables after `FROM`/`JOIN`, columns after `alias.` or in `SELECT`/`WHERE`, procedures after `EXEC`, databases after `USE`, plus keywords and functions. Press `Ctrl+Space`, or turn on *Suggest while typing* in Settings.
-- **Results grid** with multiple result sets, paging, right-aligned numbers and distinct `NULL`s, plus a Messages tab with row counts, errors and timings.
+- **Results grid** (built on [iced_grid](https://github.com/matt-baech/iced_grid)) that draws only the rows in view, so even 100,000 rows scroll smoothly. Select cells, rows or columns with click, drag, Shift+click or the arrow keys; `Ctrl+C` copies them tab-separated (pastes straight into Excel), `Ctrl+Shift+C` with headers. Drag a header border to resize a column, double-click it to fit. Right-click for Copy, Copy with Headers, Select All and Export to CSV. Numbers are right-aligned and `NULL`s stand out. Multiple result sets, plus a Messages tab with row counts, errors and timings.
 - **Cancel** a running query on the server.
 - **Query history**: the last 25 queries from all tabs, with time, database, duration and whether they succeeded. Click one to open it in a new tab, or right-click to insert or copy it. Kept in memory only, so it's cleared when litedb closes.
 - **Saved connections**, with passwords stored in your OS keyring (KWallet / GNOME Keyring / Windows Credential Manager), never in plain text.
@@ -38,10 +38,11 @@ Install Rust 1.88 or newer:
 
 ### 3. Build and install
 
-litedb uses the editor widget from [iced_code](https://github.com/matt-baech/iced_code), which must be cloned next to it:
+litedb uses the editor widget from [iced_code](https://github.com/matt-baech/iced_code) and the results grid from [iced_grid](https://github.com/matt-baech/iced_grid), which must be cloned next to it:
 
 ```bash
 git clone https://github.com/matt-baech/iced_code.git
+git clone https://github.com/matt-baech/iced_grid.git
 git clone https://github.com/matt-baech/litedb.git
 cd litedb
 cargo install --path .
@@ -116,7 +117,7 @@ Then connect to `localhost`, port `1433`, user `sa`. [`examples/persons.sql`](ex
 
 ### Settings
 
-Open with the gear icon in the status bar or `Ctrl+,`: theme, editor font size, rows per page, suggest while typing, and minimize to tray on close.
+Open with the gear icon in the status bar or `Ctrl+,`: theme, editor font size, suggest while typing, and minimize to tray on close.
 
 Settings and saved connections are stored as JSON in your config directory:
 
@@ -134,12 +135,11 @@ Passwords are never written there. They live in the OS keyring under the service
 - PostgreSQL's Object Explorer shows only the database you're connected to.
 - SQL Server: SQL logins only (no Windows Integrated Authentication). Only table triggers are listed.
 - A query keeps at most 100,000 rows per result set.
-- Grid cells can't be selected or copied yet.
 - Autocomplete doesn't know CTE names, subquery aliases or tables in other databases (`otherdb.dbo.table`).
 - macOS: while litedb is in the tray, clicking its Dock icon doesn't bring the window back; use the menu-bar icon.
 
 ## Built with
 
-[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) and [tray-icon](https://github.com/tauri-apps/tray-icon) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus) · [iced_code](https://github.com/matt-baech/iced_code) (editor)
+[Iced](https://iced.rs) (UI) · [tiberius](https://github.com/prisma/tiberius) (SQL Server) · [tokio-postgres](https://github.com/sfackler/rust-postgres) (PostgreSQL) · [keyring](https://github.com/open-source-cooperative/keyring-rs) · [ksni](https://github.com/iovxw/ksni) and [tray-icon](https://github.com/tauri-apps/tray-icon) (tray) · [iced_aw](https://github.com/iced-rs/iced_aw) (context menus) · [iced_code](https://github.com/matt-baech/iced_code) (editor) · [iced_grid](https://github.com/matt-baech/iced_grid) (results grid)
 
 Bundled fonts: [Inter](https://rsms.me/inter/) (SIL Open Font License 1.1), [Hack](https://sourcefoundry.org/hack/) (MIT), and [Codicons](https://github.com/microsoft/vscode-codicons) (CC BY 4.0). Their licence texts are in [`assets/fonts`](assets/fonts).

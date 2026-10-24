@@ -11,6 +11,7 @@ directories = "6.0.0"
 futures-util = "0.3.34"
 iced = { version = "0.14.0", features = ["tokio", "highlighter", "linux-theme-detection"] }
 iced_code = { path = "../iced_code" }
+iced_grid = { path = "../iced_grid" }
 iced_aw = { version = "0.14", default-features = false, features = ["context_menu"] }
 iced_fonts = { version = "0.3", features = ["codicon"] }
 rfd = "0.17.2"

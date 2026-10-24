@@ -49,7 +49,6 @@ pub struct Settings {
     pub sidebar_width: f32,
     pub editor_height: f32,
     pub editor_font_size: f32,
-    pub page_size: usize,
     /// Show autocomplete suggestions as you type, not only on Ctrl+Space.
     pub complete_while_typing: bool,
     /// Closing the window hides it to the system tray instead of quitting.
@@ -78,7 +77,6 @@ impl Default for WindowGeometry {
 }
 
 pub const EDITOR_FONT_SIZES: [f32; 8] = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 18.0, 20.0];
-pub const PAGE_SIZES: [usize; 4] = [200, 500, 1000, 2000];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -87,7 +85,6 @@ impl Default for Settings {
             sidebar_width: 300.0,
             editor_height: 280.0,
             editor_font_size: 13.0,
-            page_size: 500,
             complete_while_typing: false,
             minimize_to_tray: false,
             window: WindowGeometry::default(),
@@ -131,7 +128,7 @@ mod tests {
     fn missing_fields_take_defaults() {
         let s: Settings = serde_json::from_str(r#"{"theme": "Dark", "window": {"width": 900.0}}"#).unwrap();
         assert_eq!(s.theme, ThemeChoice::Dark);
-        assert_eq!(s.page_size, 500);
+        assert_eq!(s.editor_font_size, 13.0);
         assert_eq!((s.window.width, s.window.height), (900.0, 800.0));
     }
 }

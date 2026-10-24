@@ -30,7 +30,6 @@ pub enum Message {
     CloseSettings,
     SetTheme(ThemeChoice),
     SetEditorFontSize(f32),
-    SetPageSize(usize),
     SetMinimizeToTray(bool),
     SetCompleteWhileTyping(bool),
     Tray(TrayEvent),
@@ -57,6 +56,10 @@ pub enum Message {
     /// A message for the active query tab.
     Tab(TabMsg),
     ReplaceAll,
+
+    /// Saves the active result set as CSV, after asking where.
+    ExportCsv,
+    CsvPicked(Option<PathBuf>),
 
     // Query history
     OpenHistory(u64),
@@ -515,10 +518,6 @@ impl App {
             Message::SetTheme(choice) => self.set(|s| s.theme = choice),
             Message::SetEditorFontSize(size) => self.set(|s| s.editor_font_size = size),
             Message::SetCompleteWhileTyping(on) => self.set(|s| s.complete_while_typing = on),
-            Message::SetPageSize(size) => {
-                self.set(|s| s.page_size = size);
-                self.tabs.iter_mut().for_each(|t| t.page = 0);
-            }
             Message::SetMinimizeToTray(on) => {
                 self.set(|s| s.minimize_to_tray = on);
                 self.tray = if on { TrayStatus::Starting } else { TrayStatus::Off };
@@ -759,6 +758,25 @@ impl App {
                 }
             }
             Message::ClearHistory => self.history.clear(),
+            Message::ExportCsv => {
+                let dir = self.file_dir();
+                return Task::perform(files::pick_save(dir, "results.csv".into()), Message::CsvPicked);
+            }
+            Message::CsvPicked(Some(path)) => {
+                let Some(tab) = self.current() else {
+                    return Task::none();
+                };
+                let set = tab.outcome.as_ref().and_then(|o| o.results.get(tab.result_index));
+                let Some((set, (columns, _))) = set.zip(tab.grids.get(tab.result_index)) else {
+                    return Task::none();
+                };
+                let csv = iced_grid::to_csv(columns, &set.rows, Some(db::NULL));
+                self.status = match files::write(&path, &csv) {
+                    Ok(()) => Status::Info(format!("Exported {} rows to {}", set.rows.len(), path.display())),
+                    Err(e) => Status::Error(e),
+                };
+            }
+            Message::CsvPicked(None) => {}
             Message::Tab(msg) => {
                 let shift = self.modifiers.shift();
                 if let Some(tab) = self.active_tab() {

@@ -353,6 +353,16 @@ pub fn editor(theme: &Theme, status: iced_code::Status) -> iced_code::Style {
     style
 }
 
+/// The results grid: the content background, with the app's accent for the
+/// selection.
+pub fn grid(theme: &Theme, status: iced_grid::Status) -> iced_grid::Style {
+    let palette = theme.extended_palette();
+    let mut style = iced_grid::style::from_palette(palette, status);
+    style.header_background = chrome(theme);
+    style.lines = mix(palette.background.base.color, palette.background.base.text, 0.08);
+    style
+}
+
 pub fn input(theme: &Theme, status: iced::widget::text_input::Status) -> iced::widget::text_input::Style {
     use iced::widget::text_input::{self, Status};
     let border = match status {

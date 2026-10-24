@@ -15,10 +15,15 @@ pub async fn pick_open(dir: Option<PathBuf>) -> Vec<PathBuf> {
     dialog.pick_files().await.unwrap_or_default().into_iter().map(|f| f.path().to_path_buf()).collect()
 }
 
-/// Shows the system's save dialog, suggesting `name` in `dir`.
+/// Shows the system's save dialog, suggesting `name` in `dir`. The file
+/// type filter follows the name's extension (`.sql` or `.csv`).
 pub async fn pick_save(dir: Option<PathBuf>, name: String) -> Option<PathBuf> {
-    let mut dialog =
-        rfd::AsyncFileDialog::new().set_title("Save SQL File").add_filter("SQL files", &["sql"]).set_file_name(name);
+    let (title, filter, ext) = if name.ends_with(".csv") {
+        ("Export to CSV", "CSV files", "csv")
+    } else {
+        ("Save SQL File", "SQL files", "sql")
+    };
+    let mut dialog = rfd::AsyncFileDialog::new().set_title(title).add_filter(filter, &[ext]).set_file_name(name);
     if let Some(dir) = dir {
         dialog = dialog.set_directory(dir);
     }

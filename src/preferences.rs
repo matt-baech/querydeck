@@ -4,7 +4,7 @@ use iced::widget::{Column, button, column, container, pick_list, row, space, tex
 use iced::{Alignment, Element, Length};
 
 use crate::app::Message;
-use crate::settings::{EDITOR_FONT_SIZES, PAGE_SIZES, Settings, ThemeChoice};
+use crate::settings::{EDITOR_FONT_SIZES, Settings, ThemeChoice};
 use crate::style::{self, icon};
 
 /// Whether the tray icon could be shown, for the "minimize to tray" hint.
@@ -50,21 +50,12 @@ pub fn view<'a>(settings: &'a Settings, tray: &'a TrayStatus) -> Element<'a, Mes
     );
 
     let editor = section(
-        "Editor & results",
+        "Editor",
         column![
             setting_row(
                 "Editor font size",
                 "Size of the SQL text in query tabs.",
                 pick_list(&EDITOR_FONT_SIZES[..], Some(settings.editor_font_size), Message::SetEditorFontSize)
-                    .text_size(style::BODY)
-                    .padding([style::S1, style::S2])
-                    .width(90)
-                    .into(),
-            ),
-            setting_row(
-                "Rows per page",
-                "How many result rows the grid shows at a time.",
-                pick_list(&PAGE_SIZES[..], Some(settings.page_size), Message::SetPageSize)
                     .text_size(style::BODY)
                     .padding([style::S1, style::S2])
                     .width(90)
